@@ -1,0 +1,58 @@
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const cron = require('node-cron');
+const { processPendingSends, resetDailyCounters } = require('./services/emailService');
+const {
+  emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
+  exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
+  trackingRouter, adminRouter
+} = require('./routes/index');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:4173',
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
+    cb(new Error('CORS not allowed'));
+  },
+  credentials: true
+}));
+app.use(express.json({ limit: '10mb' }));
+
+app.use('/api/auth',         require('./routes/auth'));
+app.use('/api/email-accounts', emailAccountsRouter);
+app.use('/api/contacts',     contactsRouter);
+app.use('/api/campaigns',    campaignsRouter);
+app.use('/api/messages',     messagesRouter);
+app.use('/api/exclusions',   exclusionsRouter);
+app.use('/api/templates',    templatesRouter);
+app.use('/api/tickets',      ticketsRouter);
+app.use('/api/analytics',    analyticsRouter);
+app.use('/api/tracking',     trackingRouter);
+app.use('/api/admin',        adminRouter);
+
+app.get('/api/health', (req, res) => res.json({ status: 'ok', app: 'AdoBoost', version: '1.0.0', timestamp: new Date().toISOString() }));
+
+cron.schedule('*/2 * * * *', async () => {
+  try { await processPendingSends(); }
+  catch (e) { console.error('Send error:', e.message); }
+});
+cron.schedule('0 0 * * *', async () => {
+  try { await resetDailyCounters(); }
+  catch (e) { console.error('Reset error:', e.message); }
+});
+
+app.listen(PORT, '0.0.0.0', async () => {
+  console.log(`\n🚀 AdoBoost backend running on port ${PORT}`);
+  require('./models/db').getDb();
+  await resetDailyCounters();
+});

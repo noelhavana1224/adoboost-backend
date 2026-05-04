@@ -1,0 +1,63 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const { dbGet, dbRun } = require('../models/db');
+const { JWT_SECRET, authMiddleware } = require('../middleware/auth');
+const router = express.Router();
+
+router.post('/register', async (req, res) => {
+  try {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: 'All fields required' });
+    const existing = await dbGet('SELECT id FROM users WHERE email=?', [email]);
+    if (existing) return res.status(409).json({ error: 'Email already registered' });
+    const hashed = await bcrypt.hash(password, 10);
+    const id = uuidv4();
+    const apiKey = 'ab_' + uuidv4().replace(/-/g, '');
+    const userCount = (await dbGet('SELECT COUNT(*) as c FROM users', [])).c;
+    const role = userCount === 0 ? 'admin' : 'user';
+    const planExpiry = new Date();
+    planExpiry.setDate(planExpiry.getDate() + 14);
+    await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key) VALUES (?,?,?,?,?,?,?,?)',
+      [id, email, hashed, name, role, 'trial', planExpiry.toISOString(), apiKey]);
+    const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, user: { id, email, name, role, plan: 'trial' } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await dbGet('SELECT * FROM users WHERE email=?', [email]);
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    if (user.is_suspended) return res.status(403).json({ error: 'Account suspended. Contact support.' });
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    await dbRun('UPDATE users SET last_login=? WHERE id=?', [new Date().toISOString(), user.id]);
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await dbGet('SELECT id,email,name,role,plan,plan_expires_at,timezone,notify_replies,can_spam_footer,company,country,city,api_key,created_at,last_login FROM users WHERE id=?', [req.userId]);
+    res.json(user);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/settings', authMiddleware, async (req, res) => {
+  try {
+    const { name, company, country, city, address, zip, timezone, notify_replies, can_spam_footer, password } = req.body;
+    if (password) {
+      const hashed = await bcrypt.hash(password, 10);
+      await dbRun('UPDATE users SET password=? WHERE id=?', [hashed, req.userId]);
+    }
+    await dbRun('UPDATE users SET name=?,company=?,country=?,city=?,address=?,zip=?,timezone=?,notify_replies=?,can_spam_footer=? WHERE id=?',
+      [name, company, country, city, address, zip, timezone, notify_replies ? 1 : 0, can_spam_footer ? 1 : 0, req.userId]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+module.exports = router;
