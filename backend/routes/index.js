@@ -266,6 +266,17 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+campaignsRouter.post('/:id/retry-failed', async (req, res) => {
+  try {
+    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!c) return res.status(404).json({ error: 'Not found' });
+    const now = new Date().toISOString();
+    const result = await dbRun(`UPDATE sends SET status='pending', error_message=NULL, scheduled_at=? WHERE campaign_id=? AND status='failed'`, [now, req.params.id]);
+    await dbRun(`UPDATE campaigns SET status='active' WHERE id=? AND status='paused'`, [req.params.id]);
+    res.json({ success: true, retried: result.changes });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 campaignsRouter.post('/:id/pause', async (req, res) => {
   try { await dbRun(`UPDATE campaigns SET status='paused' WHERE id=? AND user_id=?`, [req.params.id, req.userId]); res.json({ success: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
