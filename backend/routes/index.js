@@ -35,6 +35,21 @@ emailAccountsRouter.post('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+emailAccountsRouter.post('/test-settings', async (req, res) => {
+  try {
+    const { host, port, secure, username, password } = req.body;
+    if (!host || !username || !password) return res.status(400).json({ error: 'host, username and password required' });
+    const t = nodemailer.createTransport({
+      host, port: Number(port), secure: secure === true || secure === 1,
+      auth: { user: username, pass: password },
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 10000, greetingTimeout: 10000,
+    });
+    await t.verify();
+    res.json({ success: true, message: 'Connection successful!' });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+
 emailAccountsRouter.post('/:id/test', async (req, res) => {
   try {
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
@@ -55,9 +70,13 @@ emailAccountsRouter.delete('/:id', async (req, res) => {
 
 emailAccountsRouter.put('/:id', async (req, res) => {
   try {
-    const { name, from_name, from_email, daily_limit, warmup_enabled, tags } = req.body;
-    await dbRun('UPDATE email_accounts SET name=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=? WHERE id=? AND user_id=?',
-      [name, from_name, from_email, daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), req.params.id, req.userId]);
+    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags } = req.body;
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!acc) return res.status(404).json({ error: 'Not found' });
+    // Only update password if a new one was provided
+    const newPassword = password ? password : acc.password;
+    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=? WHERE id=? AND user_id=?',
+      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, secure?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), req.params.id, req.userId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
