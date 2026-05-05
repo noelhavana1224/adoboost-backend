@@ -239,10 +239,32 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
 
 contactsRouter.post('/bulk-delete', async (req, res) => {
   try {
-    const { ids } = req.body;
+    const { ids, force = false } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+
+    // Check if any contacts are in active campaigns
+    const inCampaign = [];
+    for (const id of ids) {
+      const active = await dbGet(`SELECT c.name FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE s.contact_id=? AND c.status IN ('active','paused') LIMIT 1`, [id]);
+      if (active) {
+        const contact = await dbGet('SELECT email FROM contacts WHERE id=?', [id]);
+        inCampaign.push({ id, email: contact?.email, campaign: active.name });
+      }
+    }
+
+    // If contacts are in campaigns and not forced, return warning
+    if (inCampaign.length > 0 && !force) {
+      return res.status(409).json({
+        warning: true,
+        message: `${inCampaign.length} contact(s) are part of active or paused campaigns.`,
+        inCampaign,
+      });
+    }
+
+    // Proceed with delete
     let deleted = 0;
     for (const id of ids) {
+      await dbRun('DELETE FROM sends WHERE contact_id=?', [id]);
       const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [id, req.userId]);
       if (r.changes > 0) deleted++;
     }
@@ -263,8 +285,21 @@ contactsRouter.put('/:id', async (req, res) => {
 
 contactsRouter.delete('/:id', async (req, res) => {
   try {
+    const force = req.query.force === 'true';
+    // Check if contact is in an active/paused campaign
+    if (!force) {
+      const active = await dbGet(`SELECT c.name FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE s.contact_id=? AND c.status IN ('active','paused') LIMIT 1`, [req.params.id]);
+      if (active) {
+        return res.status(409).json({
+          warning: true,
+          message: `This contact is part of the campaign "${active.name}" which is currently active or paused.`,
+          campaign: active.name,
+        });
+      }
+    }
+    await dbRun('DELETE FROM sends WHERE contact_id=?', [req.params.id]);
     const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
-    if (r.changes===0) return res.status(404).json({ error: 'Not found' });
+    if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
