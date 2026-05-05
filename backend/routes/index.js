@@ -35,6 +35,24 @@ emailAccountsRouter.post('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+emailAccountsRouter.post('/diagnose', async (req, res) => {
+  const { host, port } = req.body;
+  const net = require('net');
+  const results = { host, port, canConnect: false, error: null, ip: null };
+  try {
+    // Test raw TCP connection first
+    await new Promise((resolve, reject) => {
+      const socket = new net.Socket();
+      socket.setTimeout(10000);
+      socket.on('connect', () => { results.canConnect = true; socket.destroy(); resolve(); });
+      socket.on('timeout', () => { results.error = 'Connection timed out — port may be blocked by firewall'; socket.destroy(); reject(); });
+      socket.on('error', (e) => { results.error = e.message; reject(e); });
+      socket.connect(Number(port), host);
+    });
+  } catch (e) { results.error = results.error || e.message; }
+  res.json(results);
+});
+
 emailAccountsRouter.post('/test-settings', async (req, res) => {
   try {
     const { host, port, secure, username, password } = req.body;
