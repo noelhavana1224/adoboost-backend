@@ -17,10 +17,11 @@ router.post('/register', async (req, res) => {
     const apiKey = 'ab_' + uuidv4().replace(/-/g, '');
     const userCount = (await dbGet('SELECT COUNT(*) as c FROM users', [])).c;
     const role = userCount === 0 ? 'admin' : 'user';
+    const plan = userCount === 0 ? 'unlimited' : 'trial';
     const planExpiry = new Date();
-    planExpiry.setDate(planExpiry.getDate() + 14);
+    planExpiry.setFullYear(planExpiry.getFullYear() + 10); // 10 years for admin
     await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key) VALUES (?,?,?,?,?,?,?,?)',
-      [id, email, hashed, name, role, 'trial', planExpiry.toISOString(), apiKey]);
+      [id, email, hashed, name, role, plan, planExpiry.toISOString(), apiKey]);
     const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { id, email, name, role, plan: 'trial' } });
   } catch (err) { res.status(500).json({ error: err.message }); }
