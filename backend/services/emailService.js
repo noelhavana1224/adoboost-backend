@@ -8,14 +8,15 @@ const BASE_URL = () => process.env.BASE_URL || 'http://localhost:3001';
 function personalize(template, contact) {
   try {
     const custom = JSON.parse(contact.custom_fields || '{}');
+    const fallbacks = custom._fallbacks || {};
     const data = {
-      first_name: contact.first_name || '',
-      last_name: contact.last_name || '',
-      full_name: [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.email,
-      email: contact.email,
-      company: contact.company || '',
-      title: contact.title || '',
-      website: contact.website || '',
+      first_name: contact.first_name || fallbacks.first_name || 'there',
+      last_name:  contact.last_name  || fallbacks.last_name  || '',
+      full_name:  [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.email,
+      email:      contact.email,
+      company:    contact.company || fallbacks.company || 'your company',
+      title:      contact.title   || fallbacks.title   || '',
+      website:    contact.website || '',
       ...custom,
     };
     return Handlebars.compile(template)(data);
