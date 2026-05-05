@@ -216,7 +216,29 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-contactsRouter.delete('/:id', async (req, res) => {
+contactsRouter.post('/bulk-delete', async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    let deleted = 0;
+    for (const id of ids) {
+      const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [id, req.userId]);
+      if (r.changes > 0) deleted++;
+    }
+    res.json({ success: true, deleted });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+contactsRouter.put('/:id', async (req, res) => {
+  try {
+    const { email, first_name, last_name, company, title, phone, website, list_id } = req.body;
+    const existing = await dbGet('SELECT * FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    await dbRun('UPDATE contacts SET email=?,first_name=?,last_name=?,company=?,title=?,phone=?,website=?,list_id=? WHERE id=? AND user_id=?',
+      [email||existing.email, first_name||'', last_name||'', company||'', title||'', phone||'', website||'', list_id||null, req.params.id, req.userId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
   try {
     const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (r.changes===0) return res.status(404).json({ error: 'Not found' });
