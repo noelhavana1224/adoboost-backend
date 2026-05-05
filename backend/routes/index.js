@@ -146,38 +146,73 @@ contactsRouter.post('/', async (req, res) => {
 contactsRouter.post('/import', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const { list_id } = req.body;
+    const { list_id, duplicate_action = 'skip' } = req.body;
+    const mapping = req.body.mapping ? JSON.parse(req.body.mapping) : {};
+    const fallbacks = req.body.fallbacks ? JSON.parse(req.body.fallbacks) : {};
+
     const records = parse(req.file.buffer.toString('utf-8'), { columns: true, skip_empty_lines: true, trim: true });
-    let imported=0, skipped=0;
+    let imported = 0, updated = 0, skipped = 0;
+    const errors = [];
+
     for (const row of records) {
-      // Normalize all keys to lowercase for flexible matching
-      const normalized = {};
-      for (const key of Object.keys(row)) normalized[key.toLowerCase().replace(/[^a-z0-9]/g,'_')] = row[key];
-
-      const email = (normalized.email || '').toLowerCase().trim();
-      if (!email || !email.includes('@')) { skipped++; continue; }
-
-      // Smart column mapping - handles many CSV formats
-      const first_name = normalized.first_name || normalized.firstname || normalized.first || normalized.fname || normalized.name?.split(' ')[0] || '';
-      const last_name  = normalized.last_name  || normalized.lastname  || normalized.last  || normalized.lname || normalized.name?.split(' ').slice(1).join(' ') || '';
-      const company    = normalized.company || normalized.company_name || normalized.organization || normalized.org || normalized.business || '';
-      const title      = normalized.title || normalized.job_title || normalized.jobtitle || normalized.position || normalized.role || '';
-      const phone      = normalized.phone || normalized.phone_number || normalized.mobile || normalized.cell || '';
-      const website    = normalized.website || normalized.url || normalized.domain || normalized.web || '';
-
-      // Everything else goes to custom fields
-      const known = ['email','first_name','firstname','first','fname','last_name','lastname','last','lname','name','company','company_name','organization','org','business','title','job_title','jobtitle','position','role','phone','phone_number','mobile','cell','website','url','domain','web'];
-      const custom = {};
-      for (const k of Object.keys(normalized)) { if (!known.includes(k) && normalized[k]) custom[k] = normalized[k]; }
-
       try {
-        const id = uuidv4();
-        await dbRun('INSERT OR IGNORE INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-          [id, req.userId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom)]);
-        imported++;
-      } catch { skipped++; }
+        // Get email using mapping or auto-detect
+        let email = '';
+        if (mapping.email) {
+          email = (row[mapping.email] || '').toLowerCase().trim();
+        } else {
+          // Auto-detect email column
+          for (const key of Object.keys(row)) {
+            const val = (row[key] || '').trim();
+            if (val.includes('@') && val.includes('.')) { email = val.toLowerCase(); break; }
+          }
+        }
+        if (!email || !email.includes('@')) { skipped++; continue; }
+
+        // Get fields using mapping with fallbacks
+        const getValue = (field) => {
+          let val = mapping[field] ? (row[mapping[field]] || '').trim() : '';
+          if (!val && fallbacks[field]) val = fallbacks[field];
+          return val;
+        };
+
+        const first_name = getValue('first_name');
+        const last_name  = getValue('last_name');
+        const company    = getValue('company');
+        const title      = getValue('title');
+        const phone      = getValue('phone');
+        const website    = getValue('website');
+
+        // Custom fields — any mapped columns not in standard fields
+        const standardFields = ['email','first_name','last_name','company','title','phone','website'];
+        const custom = {};
+        for (const [field, col] of Object.entries(mapping)) {
+          if (!standardFields.includes(field) && row[col]) custom[field] = row[col];
+        }
+
+        // Check for duplicate
+        const existing = await dbGet('SELECT id FROM contacts WHERE email=? AND user_id=?', [email, req.userId]);
+
+        if (existing) {
+          if (duplicate_action === 'update') {
+            await dbRun('UPDATE contacts SET first_name=?,last_name=?,company=?,title=?,phone=?,website=?,list_id=COALESCE(?,list_id),custom_fields=? WHERE id=? AND user_id=?',
+              [first_name, last_name, company, title, phone, website, list_id||null, JSON.stringify(custom), existing.id, req.userId]);
+            updated++;
+          } else {
+            skipped++;
+          }
+        } else {
+          const id = uuidv4();
+          await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            [id, req.userId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom)]);
+          imported++;
+        }
+      } catch (e) {
+        skipped++;
+        errors.push(e.message);
+      }
     }
-    res.json({ imported, skipped, total: records.length });
+    res.json({ imported, updated, skipped, total: records.length, errors: errors.slice(0, 5) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
