@@ -131,13 +131,30 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
     const records = parse(req.file.buffer.toString('utf-8'), { columns: true, skip_empty_lines: true, trim: true });
     let imported=0, skipped=0;
     for (const row of records) {
-      const email = (row.email||row.Email||row.EMAIL||'').toLowerCase().trim();
+      // Normalize all keys to lowercase for flexible matching
+      const normalized = {};
+      for (const key of Object.keys(row)) normalized[key.toLowerCase().replace(/[^a-z0-9]/g,'_')] = row[key];
+
+      const email = (normalized.email || '').toLowerCase().trim();
       if (!email || !email.includes('@')) { skipped++; continue; }
-      const { email:_e, Email:_E, EMAIL:_EE, first_name, First_Name, last_name, Last_Name, company, Company, title, Title, phone, Phone, website, Website, ...rest } = row;
+
+      // Smart column mapping - handles many CSV formats
+      const first_name = normalized.first_name || normalized.firstname || normalized.first || normalized.fname || normalized.name?.split(' ')[0] || '';
+      const last_name  = normalized.last_name  || normalized.lastname  || normalized.last  || normalized.lname || normalized.name?.split(' ').slice(1).join(' ') || '';
+      const company    = normalized.company || normalized.company_name || normalized.organization || normalized.org || normalized.business || '';
+      const title      = normalized.title || normalized.job_title || normalized.jobtitle || normalized.position || normalized.role || '';
+      const phone      = normalized.phone || normalized.phone_number || normalized.mobile || normalized.cell || '';
+      const website    = normalized.website || normalized.url || normalized.domain || normalized.web || '';
+
+      // Everything else goes to custom fields
+      const known = ['email','first_name','firstname','first','fname','last_name','lastname','last','lname','name','company','company_name','organization','org','business','title','job_title','jobtitle','position','role','phone','phone_number','mobile','cell','website','url','domain','web'];
+      const custom = {};
+      for (const k of Object.keys(normalized)) { if (!known.includes(k) && normalized[k]) custom[k] = normalized[k]; }
+
       try {
         const id = uuidv4();
         await dbRun('INSERT OR IGNORE INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-          [id, req.userId, list_id||null, email, first_name||First_Name||'', last_name||Last_Name||'', company||Company||'', title||Title||'', phone||Phone||'', website||Website||'', JSON.stringify(rest)]);
+          [id, req.userId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom)]);
         imported++;
       } catch { skipped++; }
     }
@@ -205,7 +222,6 @@ campaignsRouter.put('/:id', async (req, res) => {
   try {
     const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
-    if (c.status==='active') return res.status(400).json({ error: 'Cannot edit active campaign' });
     const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences } = req.body;
     await dbRun('UPDATE campaigns SET name=?,email_account_id=?,list_id=?,schedule_type=?,scheduled_at=?,daily_limit=?,track_opens=?,track_clicks=? WHERE id=? AND user_id=?',
       [name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens?1:0, track_clicks?1:0, req.params.id, req.userId]);
