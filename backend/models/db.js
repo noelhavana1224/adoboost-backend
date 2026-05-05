@@ -199,11 +199,14 @@ function runMigrations() {
   for (const sql of cols) {
     db.run(sql, [], () => {});
   }
-  // Promote first user to admin
+  // Promote first user to admin and set to unlimited plan
   db.get(`SELECT COUNT(*) as c FROM users WHERE role='admin'`, [], (err, row) => {
     if (!err && row && row.c === 0) {
-      db.run(`UPDATE users SET role='admin' WHERE id=(SELECT id FROM users ORDER BY created_at ASC LIMIT 1)`);
-      console.log('✅ First user promoted to admin');
+      db.run(`UPDATE users SET role='admin', plan='unlimited' WHERE id=(SELECT id FROM users ORDER BY created_at ASC LIMIT 1)`);
+      console.log('✅ First user promoted to admin with unlimited plan');
+    } else {
+      // Always ensure admin has unlimited plan
+      db.run(`UPDATE users SET plan='unlimited' WHERE role='admin'`);
     }
   });
 }
