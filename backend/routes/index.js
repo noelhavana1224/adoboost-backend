@@ -237,6 +237,17 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+contactsRouter.post('/bulk-move', async (req, res) => {
+  try {
+    const { ids, list_id } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
+    for (const id of ids) {
+      await dbRun('UPDATE contacts SET list_id=? WHERE id=? AND user_id=?', [list_id||null, id, req.userId]);
+    }
+    res.json({ success: true, moved: ids.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 contactsRouter.post('/bulk-delete', async (req, res) => {
   try {
     const { ids, force = false } = req.body;
