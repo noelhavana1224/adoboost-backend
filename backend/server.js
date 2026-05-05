@@ -30,6 +30,7 @@ app.use(express.json({ limit: '10mb' }));
 
 app.use('/api/auth',         require('./routes/auth'));
 app.use('/api/email-accounts', emailAccountsRouter);
+app.use('/api/smtp-test',    require('./routes/smtptest'));
 app.use('/api/contacts',     contactsRouter);
 app.use('/api/campaigns',    campaignsRouter);
 app.use('/api/messages',     messagesRouter);
