@@ -38,26 +38,47 @@ emailAccountsRouter.post('/', async (req, res) => {
 emailAccountsRouter.post('/test-settings', async (req, res) => {
   try {
     const { host, port, secure, username, password } = req.body;
-    if (!host || !username || !password) return res.status(400).json({ error: 'host, username and password required' });
+    if (!host || !username || !password) return res.status(400).json({ error: 'Host, username and password are required' });
     const t = nodemailer.createTransport({
-      host, port: Number(port), secure: secure === true || secure === 1,
+      host,
+      port: Number(port),
+      secure: secure === true || secure === 'true' || secure === 1,
       auth: { user: username, pass: password },
-      tls: { rejectUnauthorized: false },
-      connectionTimeout: 10000, greetingTimeout: 10000,
+      tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 15000,
+      logger: false,
+      debug: false,
     });
     await t.verify();
     res.json({ success: true, message: 'Connection successful!' });
-  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+  } catch (e) {
+    console.error('SMTP test error:', e.message);
+    res.status(400).json({ success: false, error: e.message });
+  }
 });
 
 emailAccountsRouter.post('/:id/test', async (req, res) => {
   try {
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
-    const t = nodemailer.createTransport({ host: acc.host, port: acc.port, secure: acc.secure===1, auth: { user: acc.username, pass: acc.password }, tls: { rejectUnauthorized: false } });
+    const t = nodemailer.createTransport({
+      host: acc.host,
+      port: acc.port,
+      secure: acc.secure === 1,
+      auth: { user: acc.username, pass: acc.password },
+      tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 15000,
+    });
     await t.verify();
     res.json({ success: true, message: 'Connection successful!' });
-  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+  } catch (e) {
+    console.error('SMTP test error:', e.message);
+    res.status(400).json({ success: false, error: e.message });
+  }
 });
 
 emailAccountsRouter.delete('/:id', async (req, res) => {
@@ -239,6 +260,8 @@ contactsRouter.put('/:id', async (req, res) => {
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+contactsRouter.delete('/:id', async (req, res) => {
   try {
     const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (r.changes===0) return res.status(404).json({ error: 'Not found' });
