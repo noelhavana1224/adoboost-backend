@@ -71,7 +71,7 @@ async function processPendingSends() {
       const rawBody = personalize(send.body, send);
       const finalBody = buildBody(rawBody, send.id, send.track_clicks, send.track_opens, send.can_spam_footer);
       const transporter = nodemailer.createTransport({
-        host: send.host, port: send.port, secure: send.secure===1,
+        host: send.host, port: send.port, secure: send.secure===1 || send.port===465 || send.port===993,
         auth: { user: send.username, pass: send.smtp_pass },
         tls: { rejectUnauthorized: false }
       });
