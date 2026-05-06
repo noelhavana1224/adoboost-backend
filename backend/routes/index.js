@@ -40,7 +40,6 @@ emailAccountsRouter.post('/diagnose', async (req, res) => {
   const net = require('net');
   const results = { host, port, canConnect: false, error: null, ip: null };
   try {
-    // Test raw TCP connection first
     await new Promise((resolve, reject) => {
       const socket = new net.Socket();
       socket.setTimeout(10000);
@@ -112,7 +111,6 @@ emailAccountsRouter.put('/:id', async (req, res) => {
     const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags } = req.body;
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
-    // Only update password if a new one was provided
     const newPassword = password ? password : acc.password;
     await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=? WHERE id=? AND user_id=?',
       [name||acc.name, type||acc.type, host||acc.host, port||acc.port, secure?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), req.params.id, req.userId]);
@@ -195,12 +193,10 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
 
     for (const row of records) {
       try {
-        // Get email using mapping or auto-detect
         let email = '';
         if (mapping.email) {
           email = (row[mapping.email] || '').toLowerCase().trim();
         } else {
-          // Auto-detect email column
           for (const key of Object.keys(row)) {
             const val = (row[key] || '').trim();
             if (val.includes('@') && val.includes('.')) { email = val.toLowerCase(); break; }
@@ -208,7 +204,6 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
         }
         if (!email || !email.includes('@')) { skipped++; continue; }
 
-        // Get fields using mapping with fallbacks
         const getValue = (field) => {
           let val = mapping[field] ? (row[mapping[field]] || '').trim() : '';
           if (!val && fallbacks[field]) val = fallbacks[field];
@@ -222,14 +217,12 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
         const phone      = getValue('phone');
         const website    = getValue('website');
 
-        // Custom fields — any mapped columns not in standard fields
         const standardFields = ['email','first_name','last_name','company','title','phone','website'];
         const custom = {};
         for (const [field, col] of Object.entries(mapping)) {
           if (!standardFields.includes(field) && row[col]) custom[field] = row[col];
         }
 
-        // Check for duplicate
         const existing = await dbGet('SELECT id FROM contacts WHERE email=? AND user_id=?', [email, req.userId]);
 
         if (existing) {
@@ -271,7 +264,6 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
     const { ids, force = false } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
 
-    // Check if any contacts are in active campaigns
     const inCampaign = [];
     for (const id of ids) {
       const active = await dbGet(`SELECT c.name FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE s.contact_id=? AND c.status IN ('active','paused') LIMIT 1`, [id]);
@@ -281,7 +273,6 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
       }
     }
 
-    // If contacts are in campaigns and not forced, return warning
     if (inCampaign.length > 0 && !force) {
       return res.status(409).json({
         warning: true,
@@ -290,7 +281,6 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
       });
     }
 
-    // Proceed with delete
     let deleted = 0;
     for (const id of ids) {
       await dbRun('DELETE FROM sends WHERE contact_id=?', [id]);
@@ -315,7 +305,6 @@ contactsRouter.put('/:id', async (req, res) => {
 contactsRouter.delete('/:id', async (req, res) => {
   try {
     const force = req.query.force === 'true';
-    // Check if contact is in an active/paused campaign
     if (!force) {
       const active = await dbGet(`SELECT c.name FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE s.contact_id=? AND c.status IN ('active','paused') LIMIT 1`, [req.params.id]);
       if (active) {
@@ -474,11 +463,12 @@ messagesRouter.use(authMiddleware);
 
 messagesRouter.get('/inbox', async (req, res) => {
   try {
-    const { search, status, page=1, limit=20 } = req.query;
+    const { search, status, tag, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
     let where=['m.user_id=?','m.is_auto_reply=0']; const params=[req.userId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     if (status) { where.push('m.status=?'); params.push(status); }
+    if (tag) { where.push('m.tag=?'); params.push(tag); }
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
@@ -496,6 +486,41 @@ messagesRouter.get('/auto-replies', async (req, res) => {
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
     res.json({ messages, total, page: Number(page) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+messagesRouter.post('/:id/tag', async (req, res) => {
+  try {
+    const { tag } = req.body;
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!msg) return res.status(404).json({ error: 'Not found' });
+    await dbRun('UPDATE messages SET tag=? WHERE id=?', [tag || null, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+messagesRouter.post('/:id/reply', async (req, res) => {
+  try {
+    const { body, email_account_id } = req.body;
+    if (!body) return res.status(400).json({ error: 'Reply body required' });
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [email_account_id, req.userId]);
+    if (!acc) return res.status(404).json({ error: 'Email account not found' });
+    const transporter = nodemailer.createTransport({
+      host: acc.host, port: acc.port, secure: acc.secure === 1,
+      auth: { user: acc.username, pass: acc.password },
+      tls: { rejectUnauthorized: false },
+    });
+    await transporter.sendMail({
+      from: `"${acc.from_name}" <${acc.from_email}>`,
+      to: msg.from_email,
+      subject: `Re: ${msg.subject || ''}`,
+      text: body,
+      html: body.replace(/\n/g, '<br>'),
+    });
+    await dbRun('UPDATE messages SET replied=1 WHERE id=?', [req.params.id]);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -690,7 +715,6 @@ trackingRouter.get('/unsubscribe/:sendId', async (req, res) => {
     if (s) {
       await dbRun('UPDATE sends SET unsubscribed=1 WHERE id=?', [s.id]);
       await dbRun('UPDATE contacts SET unsubscribed=1 WHERE id=?', [s.contact_id]);
-      const send = await dbGet('SELECT * FROM sends WHERE id=?', [s.id]);
       const contact = await dbGet('SELECT * FROM contacts WHERE id=?', [s.contact_id]);
       if (contact) {
         const campaign = await dbGet('SELECT user_id FROM campaigns WHERE id=?', [s.campaign_id]);
