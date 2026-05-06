@@ -72,7 +72,7 @@ router.post('/full-test', async (req, res) => {
   } else {
     results.recommendation = {
       success: false,
-      message: 'All ports blocked. Railway Hobby plan required OR use a different hosting.',
+      message: 'All ports blocked. Please check your SMTP host settings or contact your email provider.',
     };
   }
 
