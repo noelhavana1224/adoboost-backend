@@ -3,7 +3,7 @@ const Handlebars = require('handlebars');
 const { dbAll, dbRun, dbGet } = require('../models/db');
 const { v4: uuidv4 } = require('uuid');
 
-const BASE_URL = () => process.env.BASE_URL || 'http://localhost:3001';
+const BASE_URL = () => process.env.BASE_URL || 'https://api.adobosolutions.com';
 
 function personalize(template, contact) {
   try {
