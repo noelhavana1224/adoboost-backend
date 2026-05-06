@@ -664,7 +664,7 @@ analyticsRouter.get('/campaigns/:id', async (req, res) => {
 // ── Tracking ─────────────────────────────────────
 const trackingRouter = express.Router();
 const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
-const BASE_URL = () => process.env.BASE_URL || 'http://localhost:3001';
+const BASE_URL = () => process.env.BASE_URL || 'https://api.adobosolutions.com';
 
 trackingRouter.get('/open/:sendId', async (req, res) => {
   try {
