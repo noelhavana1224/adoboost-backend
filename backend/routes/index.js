@@ -95,16 +95,12 @@ emailAccountsRouter.post('/test-settings', async (req, res) => {
     const { host, port, secure, username, password } = req.body;
     if (!host || !username || !password) return res.status(400).json({ error: 'Host, username and password are required' });
     const t = nodemailer.createTransport({
-      host,
-      port: Number(port),
+      host, port: Number(port),
       secure: secure === true || secure === 'true' || secure === 1,
       auth: { user: username, pass: password },
       tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 15000,
-      logger: false,
-      debug: false,
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 15000,
+      logger: false, debug: false,
     });
     await t.verify();
     res.json({ success: true, message: 'Connection successful!' });
@@ -119,14 +115,11 @@ emailAccountsRouter.post('/:id/test', async (req, res) => {
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
     const t = nodemailer.createTransport({
-      host: acc.host,
-      port: acc.port,
+      host: acc.host, port: acc.port,
       secure: acc.secure === 1 || acc.port === 465,
       auth: { user: acc.username, pass: acc.password },
       tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 15000,
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 15000,
     });
     await t.verify();
     res.json({ success: true, message: 'Connection successful!' });
@@ -224,11 +217,9 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
     const { list_id, duplicate_action = 'skip' } = req.body;
     const mapping = req.body.mapping ? JSON.parse(req.body.mapping) : {};
     const fallbacks = req.body.fallbacks ? JSON.parse(req.body.fallbacks) : {};
-
     const records = parse(req.file.buffer.toString('utf-8'), { columns: true, skip_empty_lines: true, trim: true });
     let imported = 0, updated = 0, skipped = 0;
     const errors = [];
-
     for (const row of records) {
       try {
         let email = '';
@@ -241,46 +232,36 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
           }
         }
         if (!email || !email.includes('@')) { skipped++; continue; }
-
         const getValue = (field) => {
           let val = mapping[field] ? (row[mapping[field]] || '').trim() : '';
           if (!val && fallbacks[field]) val = fallbacks[field];
           return val;
         };
-
         const first_name = getValue('first_name');
         const last_name  = getValue('last_name');
         const company    = getValue('company');
         const title      = getValue('title');
         const phone      = getValue('phone');
         const website    = getValue('website');
-
         const standardFields = ['email','first_name','last_name','company','title','phone','website'];
         const custom = {};
         for (const [field, col] of Object.entries(mapping)) {
           if (!standardFields.includes(field) && row[col]) custom[field] = row[col];
         }
-
         const existing = await dbGet('SELECT id FROM contacts WHERE email=? AND user_id=?', [email, req.userId]);
-
         if (existing) {
           if (duplicate_action === 'update') {
             await dbRun('UPDATE contacts SET first_name=?,last_name=?,company=?,title=?,phone=?,website=?,list_id=COALESCE(?,list_id),custom_fields=? WHERE id=? AND user_id=?',
               [first_name, last_name, company, title, phone, website, list_id||null, JSON.stringify(custom), existing.id, req.userId]);
             updated++;
-          } else {
-            skipped++;
-          }
+          } else { skipped++; }
         } else {
           const id = uuidv4();
           await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
             [id, req.userId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom)]);
           imported++;
         }
-      } catch (e) {
-        skipped++;
-        errors.push(e.message);
-      }
+      } catch (e) { skipped++; errors.push(e.message); }
     }
     res.json({ imported, updated, skipped, total: records.length, errors: errors.slice(0, 5) });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -301,7 +282,6 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
   try {
     const { ids, force = false } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
-
     const inCampaign = [];
     for (const id of ids) {
       const active = await dbGet(`SELECT c.name FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE s.contact_id=? AND c.status IN ('active','paused') LIMIT 1`, [id]);
@@ -310,15 +290,9 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
         inCampaign.push({ id, email: contact?.email, campaign: active.name });
       }
     }
-
     if (inCampaign.length > 0 && !force) {
-      return res.status(409).json({
-        warning: true,
-        message: `${inCampaign.length} contact(s) are part of active or paused campaigns.`,
-        inCampaign,
-      });
+      return res.status(409).json({ warning: true, message: `${inCampaign.length} contact(s) are part of active or paused campaigns.`, inCampaign });
     }
-
     let deleted = 0;
     for (const id of ids) {
       await dbRun('DELETE FROM sends WHERE contact_id=?', [id]);
@@ -346,11 +320,7 @@ contactsRouter.delete('/:id', async (req, res) => {
     if (!force) {
       const active = await dbGet(`SELECT c.name FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE s.contact_id=? AND c.status IN ('active','paused') LIMIT 1`, [req.params.id]);
       if (active) {
-        return res.status(409).json({
-          warning: true,
-          message: `This contact is part of the campaign "${active.name}" which is currently active or paused.`,
-          campaign: active.name,
-        });
+        return res.status(409).json({ warning: true, message: `This contact is part of the campaign "${active.name}" which is currently active or paused.`, campaign: active.name });
       }
     }
     await dbRun('DELETE FROM sends WHERE contact_id=?', [req.params.id]);
@@ -435,10 +405,15 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     if (!c.list_id) return res.status(400).json({ error: 'Select a contact list first' });
     const seqs = await dbAll('SELECT * FROM sequences WHERE campaign_id=? ORDER BY step_number', [c.id]);
     if (!seqs.length) return res.status(400).json({ error: 'Add at least one email sequence' });
+
+    // FIX #4: Prevent double-launch — check for existing pending/sent sends
+    const existingSends = await dbGet(`SELECT id FROM sends WHERE campaign_id=? AND status IN ('pending','sent') LIMIT 1`, [c.id]);
+    if (existingSends) return res.status(400).json({ error: 'Campaign already launched. Use retry-failed or create a new campaign.' });
+
     const contacts = await dbAll('SELECT * FROM contacts WHERE list_id=? AND unsubscribed=0 AND bounced=0 AND user_id=?', [c.list_id, req.userId]);
     if (!contacts.length) return res.status(400).json({ error: 'No active contacts in list' });
     const now = new Date();
-    let count=0;
+    let count = 0;
     for (const contact of contacts) {
       let base = new Date(now);
       for (const seq of seqs) {
@@ -510,7 +485,9 @@ messagesRouter.get('/inbox', async (req, res) => {
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
-    res.json({ messages, total, page: Number(page) });
+    // FIX #7: Return unread count for badge display
+    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND m.status='unread'`, [req.userId])).n;
+    res.json({ messages, total, page: Number(page), unread });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -524,6 +501,17 @@ messagesRouter.get('/auto-replies', async (req, res) => {
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
     res.json({ messages, total, page: Number(page) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// FIX #2: Mark message as read/unread
+messagesRouter.post('/:id/read', async (req, res) => {
+  try {
+    const { status = 'read' } = req.body; // 'read' or 'unread'
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!msg) return res.status(404).json({ error: 'Not found' });
+    await dbRun('UPDATE messages SET status=? WHERE id=?', [status, req.params.id]);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -558,7 +546,7 @@ messagesRouter.post('/:id/reply', async (req, res) => {
       text: body,
       html: body.replace(/\n/g, '<br>'),
     });
-    await dbRun('UPDATE messages SET replied=1 WHERE id=?', [req.params.id]);
+    await dbRun('UPDATE messages SET replied=1, status=? WHERE id=?', ['read', req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -578,6 +566,17 @@ exclusionsRouter.get('/', async (req, res) => {
     const items = await dbAll(`SELECT * FROM exclusions ${w} ORDER BY created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM exclusions ${w}`, params)).n;
     res.json({ items, total, page: Number(page) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// FIX #5: /unsubscribes MUST be before /:id to avoid Express matching 'unsubscribes' as an :id
+exclusionsRouter.get('/unsubscribes', async (req, res) => {
+  try {
+    const { page=1, limit=10 } = req.query;
+    const offset = (page-1)*limit;
+    const items = await dbAll(`SELECT u.*,c.name as campaign_name FROM unsubscribes u LEFT JOIN campaigns c ON u.campaign_id=c.id WHERE u.user_id=? ORDER BY u.created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, [req.userId]);
+    const total = (await dbGet('SELECT COUNT(*) as n FROM unsubscribes WHERE user_id=?', [req.userId])).n;
+    res.json({ items, total });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -608,16 +607,6 @@ exclusionsRouter.delete('/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM exclusions WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-exclusionsRouter.get('/unsubscribes', async (req, res) => {
-  try {
-    const { page=1, limit=10 } = req.query;
-    const offset = (page-1)*limit;
-    const items = await dbAll(`SELECT u.*,c.name as campaign_name FROM unsubscribes u LEFT JOIN campaigns c ON u.campaign_id=c.id WHERE u.user_id=? ORDER BY u.created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, [req.userId]);
-    const total = (await dbGet('SELECT COUNT(*) as n FROM unsubscribes WHERE user_id=?', [req.userId])).n;
-    res.json({ items, total });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -848,7 +837,10 @@ adminRouter.delete('/users/:id', async (req, res) => {
     const user = await dbGet('SELECT * FROM users WHERE id=?', [req.params.id]);
     if (!user || user.role==='admin') return res.status(400).json({ error: 'Cannot delete this user' });
     const campaigns = await dbAll('SELECT id FROM campaigns WHERE user_id=?', [req.params.id]);
-    for (const c of campaigns) { await dbRun('DELETE FROM sends WHERE campaign_id=?', [c.id]); await dbRun('DELETE FROM sequences WHERE campaign_id=?', [c.id]); }
+    for (const c of campaigns) {
+      await dbRun('DELETE FROM sends WHERE campaign_id=?', [c.id]);
+      await dbRun('DELETE FROM sequences WHERE campaign_id=?', [c.id]);
+    }
     await dbRun('DELETE FROM campaigns WHERE user_id=?', [req.params.id]);
     await dbRun('DELETE FROM contacts WHERE user_id=?', [req.params.id]);
     await dbRun('DELETE FROM lists WHERE user_id=?', [req.params.id]);
@@ -858,6 +850,8 @@ adminRouter.delete('/users/:id', async (req, res) => {
     await dbRun('DELETE FROM unsubscribes WHERE user_id=?', [req.params.id]);
     await dbRun('DELETE FROM tickets WHERE user_id=?', [req.params.id]);
     await dbRun('DELETE FROM subscriptions WHERE user_id=?', [req.params.id]);
+    // FIX #3: Also delete this user's messages
+    await dbRun('DELETE FROM messages WHERE user_id=?', [req.params.id]);
     await dbRun('DELETE FROM users WHERE id=?', [req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
