@@ -18,20 +18,58 @@ emailAccountsRouter.use(authMiddleware);
 
 emailAccountsRouter.get('/', async (req, res) => {
   try {
-    const accounts = await dbAll('SELECT id,name,type,host,port,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,status,tags,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.userId]);
+    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.userId]);
     res.json(accounts);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 emailAccountsRouter.post('/', async (req, res) => {
   try {
-    const { name, type='smtp', host, port, secure, username, password, from_name, from_email, daily_limit } = req.body;
+    const { name, type='smtp', host, port, secure, username, password, from_name, from_email, daily_limit, imap_host, imap_port, imap_secure } = req.body;
     if (!username || !password || !from_email) return res.status(400).json({ error: 'username, password, from_email required' });
     const id = uuidv4();
-    await dbRun(`INSERT INTO email_accounts (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, req.userId, name||from_email, type, host||'', port||587, secure?1:0, username, password, from_name||'', from_email, daily_limit||100]);
-    const acc = await dbGet('SELECT id,name,type,host,port,username,from_name,from_email,daily_limit,status FROM email_accounts WHERE id=?', [id]);
+    await dbRun(`INSERT INTO email_accounts (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, req.userId, name||from_email, type, host||'', port||587, (secure===true||secure===1||secure==='true')?1:0, username, password, from_name||'', from_email, daily_limit||100, imap_host||'', imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0]);
+    const acc = await dbGet('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,status,imap_host,imap_port,imap_secure FROM email_accounts WHERE id=?', [id]);
     res.json(acc);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Test IMAP connection ──────────────────────
+emailAccountsRouter.post('/test-imap', async (req, res) => {
+  try {
+    const { imap_host, imap_port, imap_secure, username, password } = req.body;
+    if (!imap_host || !username || !password) return res.status(400).json({ error: 'IMAP host, username and password required' });
+    const Imap = require('imap');
+    const port = Number(imap_port) || 993;
+    const imap = new Imap({
+      user: username,
+      password: password,
+      host: imap_host,
+      port: port,
+      tls: port === 993 || imap_secure === true || imap_secure === 1 || String(imap_secure) === 'true',
+      tlsOptions: { rejectUnauthorized: false },
+      connTimeout: 15000,
+      authTimeout: 10000,
+    });
+    await new Promise((resolve, reject) => {
+      imap.once('ready', () => { imap.end(); resolve(); });
+      imap.once('error', reject);
+      imap.connect();
+    });
+    res.json({ success: true, message: 'IMAP connection successful!' });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+
+// ── Sync inbox via IMAP ───────────────────────
+emailAccountsRouter.post('/:id/sync-inbox', async (req, res) => {
+  try {
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!acc) return res.status(404).json({ error: 'Not found' });
+    if (!acc.imap_host) return res.status(400).json({ error: 'IMAP not configured for this account' });
+    const { syncInbox } = require('../services/imapService');
+    const result = await syncInbox(acc);
+    res.json({ success: true, synced: result.synced || 0 });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -83,7 +121,7 @@ emailAccountsRouter.post('/:id/test', async (req, res) => {
     const t = nodemailer.createTransport({
       host: acc.host,
       port: acc.port,
-      secure: acc.secure === 1,
+      secure: acc.secure === 1 || acc.port === 465,
       auth: { user: acc.username, pass: acc.password },
       tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
       connectionTimeout: 15000,
@@ -108,12 +146,12 @@ emailAccountsRouter.delete('/:id', async (req, res) => {
 
 emailAccountsRouter.put('/:id', async (req, res) => {
   try {
-    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags } = req.body;
+    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags, imap_host, imap_port, imap_secure } = req.body;
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
     const newPassword = password ? password : acc.password;
-    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=? WHERE id=? AND user_id=?',
-      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, secure?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), req.params.id, req.userId]);
+    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=?,imap_host=?,imap_port=?,imap_secure=? WHERE id=? AND user_id=?',
+      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, req.params.id, req.userId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -508,7 +546,8 @@ messagesRouter.post('/:id/reply', async (req, res) => {
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [email_account_id, req.userId]);
     if (!acc) return res.status(404).json({ error: 'Email account not found' });
     const transporter = nodemailer.createTransport({
-      host: acc.host, port: acc.port, secure: acc.secure === 1,
+      host: acc.host, port: acc.port,
+      secure: acc.secure === 1 || acc.port === 465,
       auth: { user: acc.username, pass: acc.password },
       tls: { rejectUnauthorized: false },
     });
