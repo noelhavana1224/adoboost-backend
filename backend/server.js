@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
 const { processPendingSends, resetDailyCounters } = require('./services/emailService');
+const { syncAllInboxes } = require('./services/imapService');
 const {
   emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
   exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
@@ -26,30 +27,45 @@ app.use(cors({
   },
   credentials: true
 }));
+
 app.use(express.json({ limit: '10mb' }));
 
-app.use('/api/auth',         require('./routes/auth'));
+app.use('/api/auth',           require('./routes/auth'));
 app.use('/api/email-accounts', emailAccountsRouter);
-app.use('/api/smtp-test',    require('./routes/smtptest'));
-app.use('/api/contacts',     contactsRouter);
-app.use('/api/campaigns',    campaignsRouter);
-app.use('/api/messages',     messagesRouter);
-app.use('/api/exclusions',   exclusionsRouter);
-app.use('/api/templates',    templatesRouter);
-app.use('/api/tickets',      ticketsRouter);
-app.use('/api/analytics',    analyticsRouter);
-app.use('/api/tracking',     trackingRouter);
-app.use('/api/admin',        adminRouter);
+app.use('/api/smtp-test',      require('./routes/smtptest'));
+app.use('/api/contacts',       contactsRouter);
+app.use('/api/campaigns',      campaignsRouter);
+app.use('/api/messages',       messagesRouter);
+app.use('/api/exclusions',     exclusionsRouter);
+app.use('/api/templates',      templatesRouter);
+app.use('/api/tickets',        ticketsRouter);
+app.use('/api/analytics',      analyticsRouter);
+app.use('/api/tracking',       trackingRouter);
+app.use('/api/admin',          adminRouter);
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', app: 'AdoBoost', version: '1.0.0', timestamp: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({
+  status: 'ok',
+  app: 'AdoBoost',
+  version: '1.0.0',
+  timestamp: new Date().toISOString()
+}));
 
+// ── Cron: process outgoing emails every 2 min ──────────────────────────────
 cron.schedule('*/2 * * * *', async () => {
   try { await processPendingSends(); }
   catch (e) { console.error('Send error:', e.message); }
 });
+
+// ── Cron: reset daily send counters at midnight ────────────────────────────
 cron.schedule('0 0 * * *', async () => {
   try { await resetDailyCounters(); }
   catch (e) { console.error('Reset error:', e.message); }
+});
+
+// ── Cron: sync all IMAP inboxes every 5 min ───────────────────────────────
+cron.schedule('*/5 * * * *', async () => {
+  try { await syncAllInboxes(); }
+  catch (e) { console.error('IMAP sync error:', e.message); }
 });
 
 app.listen(PORT, '0.0.0.0', async () => {
