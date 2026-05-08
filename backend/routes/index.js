@@ -539,14 +539,31 @@ messagesRouter.post('/:id/reply', async (req, res) => {
       auth: { user: acc.username, pass: acc.password },
       tls: { rejectUnauthorized: false },
     });
+    const subject = `Re: ${msg.subject || ''}`;
     await transporter.sendMail({
       from: `"${acc.from_name}" <${acc.from_email}>`,
       to: msg.from_email,
-      subject: `Re: ${msg.subject || ''}`,
+      subject,
       text: body,
       html: body.replace(/\n/g, '<br>'),
     });
+    // Mark original as replied + read
     await dbRun('UPDATE messages SET replied=1, status=? WHERE id=?', ['read', req.params.id]);
+    // Save our outgoing reply so it shows in the thread
+    await dbRun(`
+      INSERT INTO messages (id, user_id, campaign_id, from_email, from_name, subject, body, message_id, received_at, status, is_auto_reply)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', 0)
+    `, [
+      uuidv4(),
+      req.userId,
+      msg.campaign_id || null,
+      acc.from_email,
+      acc.from_name || acc.from_email,
+      subject,
+      body,
+      uuidv4(),
+      new Date().toISOString(),
+    ]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
