@@ -527,7 +527,7 @@ messagesRouter.post('/:id/tag', async (req, res) => {
 
 messagesRouter.post('/:id/reply', async (req, res) => {
   try {
-    const { body, email_account_id } = req.body;
+    const { body, email_account_id, cc, bcc, forward_to, is_forward } = req.body;
     if (!body) return res.status(400).json({ error: 'Reply body required' });
     const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!msg) return res.status(404).json({ error: 'Message not found' });
@@ -539,17 +539,26 @@ messagesRouter.post('/:id/reply', async (req, res) => {
       auth: { user: acc.username, pass: acc.password },
       tls: { rejectUnauthorized: false },
     });
-    const subject = `Re: ${msg.subject || ''}`;
-    await transporter.sendMail({
+    // Subject: Forward uses Fwd:, reply uses Re: (strip duplicates)
+    const baseSubject = (msg.subject || '').replace(/^(Re:|Fwd:)\s*/i, '');
+    const subject = is_forward ? `Fwd: ${baseSubject}` : `Re: ${baseSubject}`;
+    // To: forward goes to forward_to, reply goes back to prospect
+    const toAddress = is_forward ? forward_to : msg.from_email;
+    const mailOptions = {
       from: `"${acc.from_name}" <${acc.from_email}>`,
-      to: msg.from_email,
+      to: toAddress,
       subject,
       text: body,
       html: body.replace(/\n/g, '<br>'),
-    });
-    // Mark original as replied + read
-    await dbRun('UPDATE messages SET replied=1, status=? WHERE id=?', ['read', req.params.id]);
-    // Save our outgoing reply so it shows in the thread
+    };
+    if (cc) mailOptions.cc = cc;
+    if (bcc) mailOptions.bcc = bcc;
+    await transporter.sendMail(mailOptions);
+    // Mark original as replied + read (replies only, not forwards)
+    if (!is_forward) {
+      await dbRun('UPDATE messages SET replied=1, status=? WHERE id=?', ['read', req.params.id]);
+    }
+    // Save outgoing message so it shows in the thread
     await dbRun(`
       INSERT INTO messages (id, user_id, campaign_id, from_email, from_name, subject, body, message_id, received_at, status, is_auto_reply)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', 0)
