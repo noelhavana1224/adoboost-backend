@@ -2,7 +2,10 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '../data');
+// ── PERMANENT FIX: Always use persistent storage ──────────────────────────
+// Hardcoded fallback so even if .env is missing (Hostinger redeploy wipes it),
+// the app ALWAYS points to the correct persistent database.
+const DATA_DIR = process.env.DATA_DIR || '/home/u346663333/adoboost-data';
 const DB_PATH = path.join(DATA_DIR, 'adoboost.db');
 let db;
 
@@ -12,6 +15,7 @@ function getDb() {
     db = new sqlite3.Database(DB_PATH);
     db.run('PRAGMA journal_mode = WAL');
     db.run('PRAGMA foreign_keys = ON');
+    console.log(`📦 Database: ${DB_PATH}`);
     initSchema();
     runMigrations();
   }
@@ -44,6 +48,10 @@ function initSchema() {
       warmup_enabled INTEGER DEFAULT 0, warmup_days INTEGER DEFAULT 0,
       last_reset DATE, status TEXT DEFAULT 'active',
       tags TEXT DEFAULT '[]',
+      imap_host TEXT DEFAULT '',
+      imap_port INTEGER DEFAULT 993,
+      imap_secure INTEGER DEFAULT 1,
+      last_synced_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id))`);
 
@@ -111,7 +119,10 @@ function initSchema() {
       send_id TEXT, campaign_id TEXT,
       from_email TEXT NOT NULL, from_name TEXT,
       subject TEXT, body TEXT,
-      status TEXT DEFAULT 'engaging',
+      message_id TEXT,
+      tag TEXT,
+      replied INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'unread',
       is_auto_reply INTEGER DEFAULT 0,
       automation_status TEXT DEFAULT 'running',
       received_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -182,7 +193,9 @@ function initSchema() {
 }
 
 function runMigrations() {
-  const cols = [
+  // All migrations are idempotent — safe to run every startup
+  const migrations = [
+    // Users table
     `ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`,
     `ALTER TABLE users ADD COLUMN plan TEXT DEFAULT 'trial'`,
     `ALTER TABLE users ADD COLUMN plan_expires_at DATETIME`,
@@ -195,17 +208,32 @@ function runMigrations() {
     `ALTER TABLE users ADD COLUMN can_spam_footer INTEGER DEFAULT 1`,
     `ALTER TABLE users ADD COLUMN company TEXT`,
     `ALTER TABLE users ADD COLUMN country TEXT`,
+    // ── IMAP columns (the ones that kept breaking) ──
+    `ALTER TABLE email_accounts ADD COLUMN imap_host TEXT DEFAULT ''`,
+    `ALTER TABLE email_accounts ADD COLUMN imap_port INTEGER DEFAULT 993`,
+    `ALTER TABLE email_accounts ADD COLUMN imap_secure INTEGER DEFAULT 1`,
+    `ALTER TABLE email_accounts ADD COLUMN last_synced_at DATETIME`,
+    // ── Messages columns ──
+    `ALTER TABLE messages ADD COLUMN tag TEXT`,
+    `ALTER TABLE messages ADD COLUMN replied INTEGER DEFAULT 0`,
+    `ALTER TABLE messages ADD COLUMN message_id TEXT`,
   ];
-  for (const sql of cols) {
-    db.run(sql, [], () => {});
+
+  for (const sql of migrations) {
+    // Silently ignore "duplicate column" errors — that just means it's already applied
+    db.run(sql, [], (err) => {
+      if (err && !err.message.includes('duplicate column')) {
+        console.error('Migration error:', err.message, '|', sql);
+      }
+    });
   }
-  // Promote first user to admin and set to unlimited plan
+
+  // Promote first user to admin with unlimited plan
   db.get(`SELECT COUNT(*) as c FROM users WHERE role='admin'`, [], (err, row) => {
     if (!err && row && row.c === 0) {
       db.run(`UPDATE users SET role='admin', plan='unlimited' WHERE id=(SELECT id FROM users ORDER BY created_at ASC LIMIT 1)`);
       console.log('✅ First user promoted to admin with unlimited plan');
     } else {
-      // Always ensure admin has unlimited plan
       db.run(`UPDATE users SET plan='unlimited' WHERE role='admin'`);
     }
   });
