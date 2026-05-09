@@ -139,12 +139,12 @@ emailAccountsRouter.delete('/:id', async (req, res) => {
 
 emailAccountsRouter.put('/:id', async (req, res) => {
   try {
-    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags, imap_host, imap_port, imap_secure, emails_per_hour, delay_min, delay_max } = req.body;
+    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags, imap_host, imap_port, imap_secure, emails_per_hour, delay_min, delay_max, warmup_start_count, warmup_increment, warmup_max_count } = req.body;
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
     const newPassword = password ? password : acc.password;
-    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=?,imap_host=?,imap_port=?,imap_secure=?,emails_per_hour=?,delay_min=?,delay_max=? WHERE id=? AND user_id=?',
-      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, emails_per_hour||acc.emails_per_hour||10, delay_min||acc.delay_min||45, delay_max||acc.delay_max||120, req.params.id, req.userId]);
+    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=?,imap_host=?,imap_port=?,imap_secure=?,emails_per_hour=?,delay_min=?,delay_max=?,warmup_start_count=?,warmup_increment=?,warmup_max_count=? WHERE id=? AND user_id=?',
+      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, emails_per_hour||acc.emails_per_hour||10, delay_min||acc.delay_min||45, delay_max||acc.delay_max||120, warmup_start_count||acc.warmup_start_count||5, warmup_increment||acc.warmup_increment||5, warmup_max_count||acc.warmup_max_count||50, req.params.id, req.userId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -912,4 +912,32 @@ adminRouter.put('/tickets/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter };
+// ── Warmup Routes ───────────────────────────────
+const warmupRouter = express.Router();
+warmupRouter.use(authMiddleware);
+
+warmupRouter.get('/logs/:accountId', async (req, res) => {
+  try {
+    const logs = await dbAll(`
+      SELECT * FROM warmup_logs WHERE account_id=? ORDER BY created_at DESC LIMIT 50
+    `, [req.params.accountId]);
+    res.json(logs);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+warmupRouter.get('/stats', async (req, res) => {
+  try {
+    const accounts = await dbAll('SELECT id, from_email, warmup_enabled, warmup_health, warmup_days FROM email_accounts WHERE user_id=?', [req.userId]);
+    const today = new Date().toISOString().split('T')[0];
+    const stats = [];
+    for (const acc of accounts) {
+      const sentToday = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='sent' AND DATE(created_at)=?`, [acc.id, today]);
+      const totalSent = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='sent'`, [acc.id]);
+      const totalReplied = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='replied' AND status='sent'`, [acc.id]);
+      stats.push({ ...acc, sent_today: sentToday?.c||0, total_sent: totalSent?.c||0, total_replied: totalReplied?.c||0 });
+    }
+    res.json(stats);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter };
