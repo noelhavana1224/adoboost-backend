@@ -217,6 +217,10 @@ function runMigrations() {
     `ALTER TABLE messages ADD COLUMN tag TEXT`,
     `ALTER TABLE messages ADD COLUMN replied INTEGER DEFAULT 0`,
     `ALTER TABLE messages ADD COLUMN message_id TEXT`,
+    // ── Sending speed columns ──
+    `ALTER TABLE email_accounts ADD COLUMN emails_per_hour INTEGER DEFAULT 10`,
+    `ALTER TABLE email_accounts ADD COLUMN delay_min INTEGER DEFAULT 45`,
+    `ALTER TABLE email_accounts ADD COLUMN delay_max INTEGER DEFAULT 120`,
   ];
 
   for (const sql of migrations) {
