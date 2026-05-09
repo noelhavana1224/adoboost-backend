@@ -172,6 +172,18 @@ function initSchema() {
       is_active INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
+    // Warmup logs
+    db.run(`CREATE TABLE IF NOT EXISTS warmup_logs (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      partner_email TEXT,
+      subject TEXT,
+      status TEXT DEFAULT 'sent',
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (account_id) REFERENCES email_accounts(id))`);
+
     // Subscriptions
     db.run(`CREATE TABLE IF NOT EXISTS subscriptions (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
@@ -221,6 +233,12 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN emails_per_hour INTEGER DEFAULT 10`,
     `ALTER TABLE email_accounts ADD COLUMN delay_min INTEGER DEFAULT 45`,
     `ALTER TABLE email_accounts ADD COLUMN delay_max INTEGER DEFAULT 120`,
+    // ── Warmup columns ──
+    `ALTER TABLE email_accounts ADD COLUMN warmup_start_count INTEGER DEFAULT 5`,
+    `ALTER TABLE email_accounts ADD COLUMN warmup_increment INTEGER DEFAULT 5`,
+    `ALTER TABLE email_accounts ADD COLUMN warmup_max_count INTEGER DEFAULT 50`,
+    `ALTER TABLE email_accounts ADD COLUMN warmup_health INTEGER DEFAULT 0`,
+    `ALTER TABLE email_accounts ADD COLUMN last_warmup_at DATETIME`,
   ];
 
   for (const sql of migrations) {
