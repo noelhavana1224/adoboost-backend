@@ -233,6 +233,12 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN emails_per_hour INTEGER DEFAULT 10`,
     `ALTER TABLE email_accounts ADD COLUMN delay_min INTEGER DEFAULT 45`,
     `ALTER TABLE email_accounts ADD COLUMN delay_max INTEGER DEFAULT 120`,
+    // ── Contact tags + extra fields ──
+    `ALTER TABLE contacts ADD COLUMN tags TEXT DEFAULT '[]'`,
+    `ALTER TABLE contacts ADD COLUMN linkedin TEXT DEFAULT ''`,
+    `ALTER TABLE contacts ADD COLUMN value_prop TEXT DEFAULT ''`,
+    // ── List rename support ──
+    `ALTER TABLE lists ADD COLUMN description TEXT`,
     // ── Warmup columns ──
     `ALTER TABLE email_accounts ADD COLUMN warmup_start_count INTEGER DEFAULT 5`,
     `ALTER TABLE email_accounts ADD COLUMN warmup_increment INTEGER DEFAULT 5`,
