@@ -5,6 +5,19 @@ const { v4: uuidv4 } = require('uuid');
 
 const BASE_URL = () => process.env.BASE_URL || 'https://api.adobosolutions.com';
 
+// ── Random delay helper ──────────────────────────
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function randomDelay(minSec, maxSec) {
+  const min = Math.max(10, Number(minSec) || 45);
+  const max = Math.max(min + 5, Number(maxSec) || 120);
+  const ms = (Math.floor(Math.random() * (max - min + 1)) + min) * 1000;
+  return ms;
+}
+
+// ── Personalize template ─────────────────────────
 function personalize(template, contact) {
   try {
     const custom = JSON.parse(contact.custom_fields || '{}');
@@ -23,6 +36,7 @@ function personalize(template, contact) {
   } catch { return template; }
 }
 
+// ── Build email body with tracking ──────────────
 function buildBody(html, sendId, trackClicks, trackOpens, canSpamFooter) {
   let body = html;
   if (trackClicks) {
@@ -31,7 +45,7 @@ function buildBody(html, sendId, trackClicks, trackOpens, canSpamFooter) {
   }
   if (canSpamFooter) {
     body += `<br><br><div style="font-size:11px;color:#999;border-top:1px solid #eee;padding-top:10px;">
-      You received this email as part of a business outreach. 
+      You received this email as part of a business outreach.
       <a href="${BASE_URL()}/api/tracking/unsubscribe/${sendId}" style="color:#999;">Unsubscribe</a>
     </div>`;
   } else {
@@ -43,15 +57,30 @@ function buildBody(html, sendId, trackClicks, trackOpens, canSpamFooter) {
   return body;
 }
 
+// ── Check hourly rate limit ──────────────────────
+// Count how many emails this account sent in the last 60 minutes
+async function getSentLastHour(emailAccountId) {
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const row = await dbGet(`
+    SELECT COUNT(*) as count FROM sends
+    WHERE email_account_id=? AND status='sent' AND sent_at>=?
+  `, [emailAccountId, oneHourAgo]);
+  return row?.count || 0;
+}
+
+// ── Main send processor ──────────────────────────
 async function processPendingSends() {
   const now = new Date().toISOString();
+
   const pending = await dbAll(`
     SELECT s.*,
       c.email,c.first_name,c.last_name,c.company,c.title,c.website,c.custom_fields,
       seq.subject,seq.body,
       camp.track_opens,camp.track_clicks,camp.status as campaign_status,
       ea.host,ea.port,ea.secure,ea.username,ea.password as smtp_pass,
-      ea.from_name,ea.from_email,ea.daily_limit as acc_limit,ea.sent_today,
+      ea.from_name,ea.from_email,
+      ea.daily_limit as acc_limit,ea.sent_today,
+      ea.emails_per_hour,ea.delay_min,ea.delay_max,
       u.can_spam_footer
     FROM sends s
     JOIN contacts c ON s.contact_id=c.id
@@ -64,33 +93,79 @@ async function processPendingSends() {
     AND c.unsubscribed=0 AND c.bounced=0
     ORDER BY s.scheduled_at ASC LIMIT 50`, [now]);
 
+  // Track per-account hourly counts in memory for this batch
+  const hourlyCache = {};
+  let lastAccountId = null;
+  let emailsInBatch = 0;
+
   for (const send of pending) {
-    if (send.sent_today >= send.acc_limit) continue;
+    // ── Check daily limit ──
+    if (send.sent_today >= send.acc_limit) {
+      console.log(`⏸ Daily limit reached for ${send.from_email} (${send.sent_today}/${send.acc_limit})`);
+      continue;
+    }
+
+    // ── Check hourly limit ──
+    const emailsPerHour = send.emails_per_hour || 10; // default 10/hr if not set
+    if (!hourlyCache[send.email_account_id]) {
+      hourlyCache[send.email_account_id] = await getSentLastHour(send.email_account_id);
+    }
+    if (hourlyCache[send.email_account_id] >= emailsPerHour) {
+      console.log(`⏸ Hourly limit reached for ${send.from_email} (${hourlyCache[send.email_account_id]}/${emailsPerHour}/hr)`);
+      continue;
+    }
+
     try {
-      const subject = personalize(send.subject, send);
-      const rawBody = personalize(send.body, send);
+      const subject   = personalize(send.subject, send);
+      const rawBody   = personalize(send.body, send);
       const finalBody = buildBody(rawBody, send.id, send.track_clicks, send.track_opens, send.can_spam_footer);
+
       const transporter = nodemailer.createTransport({
-        host: send.host, port: send.port, secure: send.secure===1 || send.port===465 || send.port===993,
+        host: send.host,
+        port: send.port,
+        secure: send.secure === 1 || send.port === 465 || send.port === 993,
         auth: { user: send.username, pass: send.smtp_pass },
-        tls: { rejectUnauthorized: false }
+        tls: { rejectUnauthorized: false },
       });
+
       const info = await transporter.sendMail({
         from: `"${send.from_name}" <${send.from_email}>`,
-        to: send.email, subject, html: finalBody,
+        to:   send.email,
+        subject,
+        html: finalBody,
         text: rawBody.replace(/<[^>]*>/g, ''),
       });
-      await dbRun(`UPDATE sends SET status='sent',sent_at=?,message_id=? WHERE id=?`, [new Date().toISOString(), info.messageId, send.id]);
-      await dbRun(`UPDATE email_accounts SET sent_today=sent_today+1 WHERE id=?`, [send.email_account_id]);
+
+      await dbRun(`UPDATE sends SET status='sent', sent_at=?, message_id=? WHERE id=?`,
+        [new Date().toISOString(), info.messageId, send.id]);
+      await dbRun(`UPDATE email_accounts SET sent_today=sent_today+1 WHERE id=?`,
+        [send.email_account_id]);
+
+      // Update in-memory hourly counter
+      hourlyCache[send.email_account_id] = (hourlyCache[send.email_account_id] || 0) + 1;
+
+      console.log(`✅ Sent to ${send.email} via ${send.from_email} (${hourlyCache[send.email_account_id]}/${emailsPerHour} this hour)`);
+
+      // ── Random delay between emails ──────────────
+      // Only delay if there are more sends coming
+      const delayMs = randomDelay(send.delay_min, send.delay_max);
+      const delaySec = Math.round(delayMs / 1000);
+      console.log(`⏱ Waiting ${delaySec}s before next email (random ${send.delay_min||45}–${send.delay_max||120}s)`);
+      await sleep(delayMs);
+
     } catch (err) {
-      await dbRun(`UPDATE sends SET status='failed',error_message=? WHERE id=?`, [err.message, send.id]);
+      console.error(`❌ Send failed to ${send.email}:`, err.message);
+      await dbRun(`UPDATE sends SET status='failed', error_message=? WHERE id=?`,
+        [err.message, send.id]);
     }
   }
 }
 
+// ── Reset daily counters at midnight ────────────
 async function resetDailyCounters() {
   const today = new Date().toISOString().split('T')[0];
-  await dbRun(`UPDATE email_accounts SET sent_today=0,last_reset=? WHERE last_reset IS NULL OR last_reset<?`, [today, today]);
+  await dbRun(`UPDATE email_accounts SET sent_today=0, last_reset=? WHERE last_reset IS NULL OR last_reset<?`,
+    [today, today]);
 }
 
 module.exports = { processPendingSends, resetDailyCounters };
