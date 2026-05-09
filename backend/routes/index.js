@@ -174,6 +174,15 @@ contactsRouter.post('/lists', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+contactsRouter.put('/lists/:id', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const r = await dbRun('UPDATE lists SET name=?,description=? WHERE id=? AND user_id=?', [name, description||'', req.params.id, req.userId]);
+    if (r.changes===0) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 contactsRouter.delete('/lists/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM contacts WHERE list_id=? AND user_id=?', [req.params.id, req.userId]);
@@ -305,11 +314,17 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
 
 contactsRouter.put('/:id', async (req, res) => {
   try {
-    const { email, first_name, last_name, company, title, phone, website, list_id } = req.body;
+    const { email, first_name, last_name, company, title, phone, website, list_id, tags, custom_fields, linkedin, value_prop } = req.body;
     const existing = await dbGet('SELECT * FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!existing) return res.status(404).json({ error: 'Not found' });
-    await dbRun('UPDATE contacts SET email=?,first_name=?,last_name=?,company=?,title=?,phone=?,website=?,list_id=? WHERE id=? AND user_id=?',
-      [email||existing.email, first_name||'', last_name||'', company||'', title||'', phone||'', website||'', list_id||null, req.params.id, req.userId]);
+    // Merge custom_fields with linkedin/value_prop
+    let cf = {};
+    try { cf = JSON.parse(existing.custom_fields || '{}'); } catch {}
+    if (custom_fields) { try { cf = { ...cf, ...JSON.parse(custom_fields) }; } catch {} }
+    if (linkedin !== undefined) cf.linkedin = linkedin;
+    if (value_prop !== undefined) cf.value_prop = value_prop;
+    await dbRun('UPDATE contacts SET email=?,first_name=?,last_name=?,company=?,title=?,phone=?,website=?,list_id=?,tags=?,custom_fields=? WHERE id=? AND user_id=?',
+      [email||existing.email, first_name||'', last_name||'', company||'', title||'', phone||'', website||'', list_id||null, tags||existing.tags||'[]', JSON.stringify(cf), req.params.id, req.userId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
