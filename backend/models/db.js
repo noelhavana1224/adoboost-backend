@@ -237,6 +237,8 @@ function runMigrations() {
     `ALTER TABLE contacts ADD COLUMN tags TEXT DEFAULT '[]'`,
     `ALTER TABLE contacts ADD COLUMN linkedin TEXT DEFAULT ''`,
     `ALTER TABLE contacts ADD COLUMN value_prop TEXT DEFAULT ''`,
+    `ALTER TABLE contacts ADD COLUMN city TEXT DEFAULT ''`,
+    `ALTER TABLE contacts ADD COLUMN country TEXT DEFAULT ''`,
     // ── List rename support ──
     `ALTER TABLE lists ADD COLUMN description TEXT`,
     // ── Warmup columns ──
