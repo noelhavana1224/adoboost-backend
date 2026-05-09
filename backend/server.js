@@ -4,10 +4,11 @@ const cors = require('cors');
 const cron = require('node-cron');
 const { processPendingSends, resetDailyCounters } = require('./services/emailService');
 const { syncAllInboxes } = require('./services/imapService');
+const { processWarmup } = require('./services/warmupService');
 const {
   emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
   exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
-  trackingRouter, adminRouter
+  trackingRouter, adminRouter, warmupRouter
 } = require('./routes/index');
 
 const app = express();
@@ -66,6 +67,12 @@ cron.schedule('0 0 * * *', async () => {
 cron.schedule('*/5 * * * *', async () => {
   try { await syncAllInboxes(); }
   catch (e) { console.error('IMAP sync error:', e.message); }
+});
+
+// ── Cron: run warmup network once daily at 9am ─────────────────────────────
+cron.schedule('0 9 * * *', async () => {
+  try { await processWarmup(); }
+  catch (e) { console.error('Warmup error:', e.message); }
 });
 
 app.listen(PORT, '0.0.0.0', async () => {
