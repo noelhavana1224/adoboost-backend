@@ -240,7 +240,9 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
             if (val.includes('@') && val.includes('.')) { email = val.toLowerCase(); break; }
           }
         }
-        if (!email || !email.includes('@')) { skipped++; continue; }
+        // Skip contacts with no valid email — email is required for this system
+        if (!email || !email.includes('@') || !email.includes('.')) { skipped++; continue; }
+
         const getValue = (field) => {
           let val = mapping[field] ? (row[mapping[field]] || '').trim() : '';
           if (!val && fallbacks[field]) val = fallbacks[field];
@@ -252,8 +254,20 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
         const title      = getValue('title');
         const phone      = getValue('phone');
         const website    = getValue('website');
-        const standardFields = ['email','first_name','last_name','company','title','phone','website'];
+        const linkedin   = getValue('linkedin');
+        const city       = getValue('city');
+        const country    = getValue('country');
+        const location   = getValue('location');
+        const company_location = getValue('company_location');
+
+        const standardFields = ['email','first_name','last_name','company','title','phone','website','linkedin','city','country','location','company_location'];
         const custom = {};
+        // Store extra fields like linkedin, city, country etc in custom_fields JSON
+        if (linkedin) custom.linkedin = linkedin;
+        if (city) custom.city = city;
+        if (country) custom.country = country;
+        if (location) custom.location = location;
+        if (company_location) custom.company_location = company_location;
         for (const [field, col] of Object.entries(mapping)) {
           if (!standardFields.includes(field) && row[col]) custom[field] = row[col];
         }
@@ -266,8 +280,12 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
           } else { skipped++; }
         } else {
           const id = uuidv4();
-          await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            [id, req.userId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom)]);
+          // Apply import-level tags if provided
+          const importTagsRaw = req.body.import_tags;
+          const importTags = importTagsRaw ? JSON.parse(importTagsRaw) : [];
+          const tagsJson = JSON.stringify(importTags);
+          await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields,tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            [id, req.userId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom), tagsJson]);
           imported++;
         }
       } catch (e) { skipped++; errors.push(e.message); }
