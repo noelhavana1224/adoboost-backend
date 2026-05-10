@@ -43,6 +43,9 @@ app.use('/api/tickets',        ticketsRouter);
 app.use('/api/analytics',      analyticsRouter);
 app.use('/api/tracking',       trackingRouter);
 app.use('/api/admin',          adminRouter);
+app.use('/api/warmup',         warmupRouter);
+app.use('/api/team-members',   teamRouter);
+app.use('/api/admin/team',     adminTeamRouter);
 
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',
