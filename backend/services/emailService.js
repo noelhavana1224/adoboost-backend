@@ -18,10 +18,22 @@ function randomDelay(minSec, maxSec) {
 }
 
 // ── Personalize template ─────────────────────────
-function personalize(template, contact) {
+function personalize(template, contact, account) {
   try {
     const custom = JSON.parse(contact.custom_fields || '{}');
     const fallbacks = custom._fallbacks || {};
+    // Build signature from account
+    let signature = '';
+    if (account?.signature) {
+      try {
+        const sig = JSON.parse(account.signature);
+        const raw = sig.mode === 'plain' ? (sig.plain || '') : (sig.html || sig.plain || '');
+        // Replace signature-level variables
+        signature = raw
+          .replace(/\{\{from_name\}\}/g, account.from_name || '')
+          .replace(/\{\{from_email\}\}/g, account.from_email || '');
+      } catch { signature = account.signature || ''; }
+    }
     const data = {
       first_name: contact.first_name || fallbacks.first_name || 'there',
       last_name:  contact.last_name  || fallbacks.last_name  || '',
@@ -30,6 +42,9 @@ function personalize(template, contact) {
       company:    contact.company || fallbacks.company || 'your company',
       title:      contact.title   || fallbacks.title   || '',
       website:    contact.website || '',
+      from_name:  account?.from_name  || '',
+      from_email: account?.from_email || '',
+      signature,
       ...custom,
     };
     return Handlebars.compile(template)(data);
@@ -76,9 +91,9 @@ async function processPendingSends() {
     SELECT s.*,
       c.email,c.first_name,c.last_name,c.company,c.title,c.website,c.custom_fields,
       seq.subject,seq.body,
-      camp.track_opens,camp.track_clicks,camp.status as campaign_status,
+      camp.track_opens,camp.track_clicks,camp.status as campaign_status,camp.rotation_account_ids,
       ea.host,ea.port,ea.secure,ea.username,ea.password as smtp_pass,
-      ea.from_name,ea.from_email,
+      ea.from_name,ea.from_email,ea.signature,
       ea.daily_limit as acc_limit,ea.sent_today,
       ea.emails_per_hour,ea.delay_min,ea.delay_max,
       u.can_spam_footer
@@ -99,6 +114,25 @@ async function processPendingSends() {
   let emailsInBatch = 0;
 
   for (const send of pending) {
+    // ── Inbox Rotation: pick a random account if rotation is set ──
+    let activeSend = send;
+    if (send.rotation_account_ids) {
+      try {
+        const rotIds = JSON.parse(send.rotation_account_ids || '[]');
+        if (rotIds.length > 1) {
+          // Pick a random account from the rotation list
+          const randomId = rotIds[Math.floor(Math.random() * rotIds.length)];
+          if (randomId !== send.email_account_id) {
+            const rotAcc = await dbGet(`SELECT * FROM email_accounts WHERE id=?`, [randomId]);
+            if (rotAcc && rotAcc.sent_today < (rotAcc.daily_limit || 50)) {
+              activeSend = { ...send, ...rotAcc, email_account_id: rotAcc.id, acc_limit: rotAcc.daily_limit || 50, smtp_pass: rotAcc.password };
+            }
+          }
+        }
+      } catch {}
+    }
+    send = activeSend;
+
     // ── Check daily limit ──
     if (send.sent_today >= send.acc_limit) {
       console.log(`⏸ Daily limit reached for ${send.from_email} (${send.sent_today}/${send.acc_limit})`);
@@ -116,8 +150,9 @@ async function processPendingSends() {
     }
 
     try {
-      const subject   = personalize(send.subject, send);
-      const rawBody   = personalize(send.body, send);
+      const account   = { from_name: send.from_name, from_email: send.from_email, signature: send.signature };
+      const subject   = personalize(send.subject, send, account);
+      const rawBody   = personalize(send.body, send, account);
       const finalBody = buildBody(rawBody, send.id, send.track_clicks, send.track_opens, send.can_spam_footer);
 
       const transporter = nodemailer.createTransport({
