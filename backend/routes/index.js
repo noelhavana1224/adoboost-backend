@@ -1074,13 +1074,15 @@ teamRouter.get('/', async (req, res) => {
 teamRouter.post('/invite', async (req, res) => {
   try {
     const { name, email, password, permissions } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    if (!email) return res.status(400).json({ error: 'Email required' });
     const existing = await dbGet('SELECT id FROM users WHERE email=?', [email.toLowerCase()]);
     if (existing) return res.status(409).json({ error: 'This email already has an AdoBoost account' });
     const existingMember = await dbGet('SELECT id FROM team_members WHERE email=? AND owner_id=?', [email.toLowerCase(), req.userId]);
     if (existingMember) return res.status(409).json({ error: 'This email is already a team member' });
     const bcrypt = require('bcryptjs');
-    const hashed = await bcrypt.hash(password, 10);
+    const crypto = require('crypto');
+    const tempPassword = password || crypto.randomBytes(8).toString('hex');
+    const hashed = await bcrypt.hash(tempPassword, 10);
     const id = require('uuid').v4();
     await dbRun('INSERT INTO team_members (id,owner_id,name,email,password,permissions,status) VALUES (?,?,?,?,?,?,?)',
       [id, req.userId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active']);
@@ -1088,7 +1090,7 @@ teamRouter.post('/invite', async (req, res) => {
     try {
       const owner = await dbGet('SELECT name FROM users WHERE id=?', [req.userId]);
       const { sendTeamInviteEmail } = require('../services/emailSystem');
-      await sendTeamInviteEmail(owner?.name||'Your account owner', name||email, email.toLowerCase(), req.body.password, false);
+      await sendTeamInviteEmail(owner?.name||'Your account owner', name||email, email.toLowerCase(), tempPassword, false);
     } catch(e) { console.error('Invite email error:', e.message); }
     res.json({ success:true, id });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -1139,19 +1141,22 @@ adminTeamRouter.post('/invite', requireAdminOrSuper, async (req, res) => {
     // Only super admin can add new admins
     if (!req.currentUser.is_super_admin) return res.status(403).json({ error: 'Only Super Admins can add new admins' });
     const { name, email, password, is_super_admin, admin_permissions } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    if (!email) return res.status(400).json({ error: 'Email required' });
     const existing = await dbGet('SELECT id FROM users WHERE email=?', [email.toLowerCase()]);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
     const bcrypt = require('bcryptjs');
-    const hashed = await bcrypt.hash(password, 10);
+    const crypto = require('crypto');
+    // Auto-generate a secure temp password
+    const tempPassword = password || crypto.randomBytes(8).toString('hex');
+    const hashed = await bcrypt.hash(tempPassword, 10);
     const id = require('uuid').v4();
-    await dbRun('INSERT INTO users (id,name,email,password,role,is_super_admin,admin_permissions,plan,status) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, name||'', email.toLowerCase(), hashed, 'admin', is_super_admin?1:0, admin_permissions||'{}', 'unlimited', 'active']);
+    await dbRun('INSERT INTO users (id,name,email,password,role,is_super_admin,admin_permissions,plan) VALUES (?,?,?,?,?,?,?,?)',
+      [id, name||'', email.toLowerCase(), hashed, 'admin', is_super_admin?1:0, admin_permissions||'{}', 'unlimited']);
     // Send admin invite email
     try {
       const inviter = await dbGet('SELECT name FROM users WHERE id=?', [req.userId]);
       const { sendTeamInviteEmail } = require('../services/emailSystem');
-      await sendTeamInviteEmail(inviter?.name||'AdoBoost Admin', name||email, email.toLowerCase(), req.body.password, true);
+      await sendTeamInviteEmail(inviter?.name||'AdoBoost Admin', name||email, email.toLowerCase(), tempPassword, true);
     } catch(e) { console.error('Admin invite email error:', e.message); }
     res.json({ success:true, id });
   } catch(e) { res.status(500).json({ error: e.message }); }
