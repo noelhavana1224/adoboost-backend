@@ -46,6 +46,7 @@ app.use('/api/admin',          adminRouter);
 app.use('/api/warmup',         warmupRouter);
 app.use('/api/team-members',   teamRouter);
 app.use('/api/admin/team',     adminTeamRouter);
+app.use('/api/auth',           require('./routes/authSystem'));  // forgot/reset password
 
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',
