@@ -184,6 +184,15 @@ function initSchema() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (account_id) REFERENCES email_accounts(id))`);
 
+    // Password reset tokens
+    db.run(`CREATE TABLE IF NOT EXISTS reset_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      expires_at DATETIME NOT NULL,
+      used INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+
     // Team members (per client account)
     db.run(`CREATE TABLE IF NOT EXISTS team_members (
       id TEXT PRIMARY KEY,
