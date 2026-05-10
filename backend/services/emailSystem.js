@@ -1,14 +1,23 @@
 const nodemailer = require('nodemailer');
 
 // ── System mailer (noreply@adobosolutions.com) ───
+// Hardcoded fallbacks so emails work even if .env is wiped by Hostinger
+const SYSTEM_SMTP = {
+  host: process.env.SYSTEM_SMTP_HOST || 'smtp.hostinger.com',
+  port: parseInt(process.env.SYSTEM_SMTP_PORT || '465'),
+  user: process.env.SYSTEM_SMTP_USER || 'noreply@adobosolutions.com',
+  // IMPORTANT: Update this password if you change noreply@adobosolutions.com password
+  pass: process.env.SYSTEM_SMTP_PASS || 'REPLACE_WITH_YOUR_NOREPLY_PASSWORD',
+};
+
 function createSystemMailer() {
   return nodemailer.createTransport({
-    host: process.env.SYSTEM_SMTP_HOST || 'smtp.hostinger.com',
-    port: parseInt(process.env.SYSTEM_SMTP_PORT || '465'),
+    host: SYSTEM_SMTP.host,
+    port: SYSTEM_SMTP.port,
     secure: true,
     auth: {
-      user: process.env.SYSTEM_SMTP_USER || 'noreply@adobosolutions.com',
-      pass: process.env.SYSTEM_SMTP_PASS || 'Havana1224!',
+      user: SYSTEM_SMTP.user,
+      pass: SYSTEM_SMTP.pass,
     },
     tls: { rejectUnauthorized: false },
   });
