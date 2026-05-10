@@ -384,6 +384,37 @@ campaignsRouter.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Campaign reports endpoint ──────────────────
+campaignsRouter.get('/reports', async (req, res) => {
+  try {
+    const camps = await dbAll(`
+      SELECT c.*,
+        l.name as list_name,
+        ea.from_email as account_email,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.status='sent') as sent_count,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.opened_at IS NOT NULL) as opened_count,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.clicked_at IS NOT NULL) as clicked_count,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.replied_at IS NOT NULL) as replied_count,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.status='bounced') as bounced_count,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.status='failed') as failed_count,
+        (SELECT COUNT(*) FROM contacts ct WHERE ct.list_id=c.list_id AND ct.unsubscribed=1) as unsubscribed_count
+      FROM campaigns c
+      LEFT JOIN lists l ON c.list_id=l.id
+      LEFT JOIN email_accounts ea ON c.email_account_id=ea.id
+      WHERE c.user_id=?
+      ORDER BY c.created_at DESC
+    `, [req.userId]);
+    const enriched = camps.map(c => ({
+      ...c,
+      open_rate:   c.sent_count > 0 ? ((c.opened_count  / c.sent_count) * 100).toFixed(1) : '0.0',
+      click_rate:  c.sent_count > 0 ? ((c.clicked_count / c.sent_count) * 100).toFixed(1) : '0.0',
+      reply_rate:  c.sent_count > 0 ? ((c.replied_count / c.sent_count) * 100).toFixed(1) : '0.0',
+      bounce_rate: c.sent_count > 0 ? ((c.bounced_count / c.sent_count) * 100).toFixed(1) : '0.0',
+    }));
+    res.json(enriched);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 campaignsRouter.get('/:id', async (req, res) => {
   try {
     const c = await dbGet(`SELECT c.*,l.name as list_name,ea.from_email as account_email FROM campaigns c LEFT JOIN lists l ON c.list_id=l.id LEFT JOIN email_accounts ea ON c.email_account_id=ea.id WHERE c.id=? AND c.user_id=?`, [req.params.id, req.userId]);
