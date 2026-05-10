@@ -1021,4 +1021,117 @@ warmupRouter.get('/stats', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter };
+// ── Team Members Router (client-facing) ─────────
+const teamRouter = express.Router();
+teamRouter.use(authMiddleware);
+
+teamRouter.get('/', async (req, res) => {
+  try {
+    const members = await dbAll('SELECT id,name,email,permissions,status,created_at FROM team_members WHERE owner_id=? ORDER BY created_at DESC', [req.userId]);
+    res.json(members);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+teamRouter.post('/invite', async (req, res) => {
+  try {
+    const { name, email, password, permissions } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    const existing = await dbGet('SELECT id FROM users WHERE email=?', [email.toLowerCase()]);
+    if (existing) return res.status(409).json({ error: 'This email already has an AdoBoost account' });
+    const existingMember = await dbGet('SELECT id FROM team_members WHERE email=? AND owner_id=?', [email.toLowerCase(), req.userId]);
+    if (existingMember) return res.status(409).json({ error: 'This email is already a team member' });
+    const bcrypt = require('bcryptjs');
+    const hashed = await bcrypt.hash(password, 10);
+    const id = require('uuid').v4();
+    await dbRun('INSERT INTO team_members (id,owner_id,name,email,password,permissions,status) VALUES (?,?,?,?,?,?,?)',
+      [id, req.userId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active']);
+    res.json({ success:true, id });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+teamRouter.put('/:id', async (req, res) => {
+  try {
+    const { name, password, permissions, status } = req.body;
+    const member = await dbGet('SELECT * FROM team_members WHERE id=? AND owner_id=?', [req.params.id, req.userId]);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    let hashed = member.password;
+    if (password) { const bcrypt = require('bcryptjs'); hashed = await bcrypt.hash(password, 10); }
+    await dbRun('UPDATE team_members SET name=?,password=?,permissions=?,status=? WHERE id=? AND owner_id=?',
+      [name||member.name, hashed, permissions||member.permissions, status||member.status, req.params.id, req.userId]);
+    res.json({ success:true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+teamRouter.delete('/:id', async (req, res) => {
+  try {
+    const r = await dbRun('DELETE FROM team_members WHERE id=? AND owner_id=?', [req.params.id, req.userId]);
+    if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
+    res.json({ success:true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Admin Team Router ────────────────────────────
+const adminTeamRouter = express.Router();
+adminTeamRouter.use(authMiddleware);
+
+// Middleware: must be super admin OR admin
+const requireAdminOrSuper = async (req, res, next) => {
+  const user = await dbGet('SELECT * FROM users WHERE id=?', [req.userId]);
+  if (!user || (user.role !== 'admin' && !user.is_super_admin)) return res.status(403).json({ error: 'Admin access required' });
+  req.currentUser = user;
+  next();
+};
+
+adminTeamRouter.get('/', requireAdminOrSuper, async (req, res) => {
+  try {
+    const admins = await dbAll("SELECT id,name,email,role,is_super_admin,admin_permissions,created_at FROM users WHERE role='admin' ORDER BY is_super_admin DESC, created_at ASC", []);
+    res.json(admins);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+adminTeamRouter.post('/invite', requireAdminOrSuper, async (req, res) => {
+  try {
+    // Only super admin can add new admins
+    if (!req.currentUser.is_super_admin) return res.status(403).json({ error: 'Only Super Admins can add new admins' });
+    const { name, email, password, is_super_admin, admin_permissions } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    const existing = await dbGet('SELECT id FROM users WHERE email=?', [email.toLowerCase()]);
+    if (existing) return res.status(409).json({ error: 'Email already registered' });
+    const bcrypt = require('bcryptjs');
+    const hashed = await bcrypt.hash(password, 10);
+    const id = require('uuid').v4();
+    await dbRun('INSERT INTO users (id,name,email,password,role,is_super_admin,admin_permissions,plan,status) VALUES (?,?,?,?,?,?,?,?,?)',
+      [id, name||'', email.toLowerCase(), hashed, 'admin', is_super_admin?1:0, admin_permissions||'{}', 'unlimited', 'active']);
+    res.json({ success:true, id });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+adminTeamRouter.put('/:id', requireAdminOrSuper, async (req, res) => {
+  try {
+    if (!req.currentUser.is_super_admin) return res.status(403).json({ error: 'Only Super Admins can edit admins' });
+    const { name, password, is_super_admin, admin_permissions } = req.body;
+    const target = await dbGet('SELECT * FROM users WHERE id=? AND role=?', [req.params.id, 'admin']);
+    if (!target) return res.status(404).json({ error: 'Admin not found' });
+    // Cannot demote yourself
+    if (target.id === req.userId && !is_super_admin) return res.status(403).json({ error: 'Cannot remove your own Super Admin status' });
+    let hashed = target.password;
+    if (password) { const bcrypt = require('bcryptjs'); hashed = await bcrypt.hash(password, 10); }
+    await dbRun('UPDATE users SET name=?,password=?,is_super_admin=?,admin_permissions=? WHERE id=?',
+      [name||target.name, hashed, is_super_admin?1:0, admin_permissions||'{}', req.params.id]);
+    res.json({ success:true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+adminTeamRouter.delete('/:id', requireAdminOrSuper, async (req, res) => {
+  try {
+    if (!req.currentUser.is_super_admin) return res.status(403).json({ error: 'Only Super Admins can remove admins' });
+    const target = await dbGet('SELECT * FROM users WHERE id=?', [req.params.id]);
+    if (!target) return res.status(404).json({ error: 'Not found' });
+    if (target.id === req.userId) return res.status(403).json({ error: 'Cannot delete yourself' });
+    if (target.is_super_admin) return res.status(403).json({ error: 'Cannot delete a Super Admin' });
+    await dbRun('DELETE FROM users WHERE id=? AND role=?', [req.params.id, 'admin']);
+    res.json({ success:true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter };
