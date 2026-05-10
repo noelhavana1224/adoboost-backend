@@ -8,7 +8,7 @@ const { processWarmup } = require('./services/warmupService');
 const {
   emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
   exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
-  trackingRouter, adminRouter, warmupRouter
+  trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter
 } = require('./routes/index');
 
 const app = express();
