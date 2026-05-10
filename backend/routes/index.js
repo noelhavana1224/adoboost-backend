@@ -993,6 +993,45 @@ adminRouter.put('/tickets/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Forgot Password ─────────────────────────────
+const authSystemRouter = express.Router();
+
+authSystemRouter.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const user = await dbGet('SELECT * FROM users WHERE LOWER(email)=?', [email.toLowerCase()]);
+    // Always return success to prevent email enumeration
+    if (!user) return res.json({ success: true, message: 'If that email exists, a reset link has been sent.' });
+    // Generate token
+    const { v4: uuidv4 } = require('uuid');
+    const crypto = require('crypto');
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 60*60*1000).toISOString(); // 1 hour
+    await dbRun('INSERT INTO reset_tokens (id,user_id,token,expires_at) VALUES (?,?,?,?)',
+      [uuidv4(), user.id, token, expires]);
+    const { sendResetEmail } = require('../services/emailSystem');
+    await sendResetEmail(user.name || user.email, user.email, token);
+    res.json({ success: true, message: 'If that email exists, a reset link has been sent.' });
+  } catch(e) { console.error('Forgot password error:', e); res.status(500).json({ error: 'Failed to send reset email' }); }
+});
+
+authSystemRouter.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'Token and password required' });
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    const resetToken = await dbGet('SELECT * FROM reset_tokens WHERE token=? AND used=0 AND expires_at>?',
+      [token, new Date().toISOString()]);
+    if (!resetToken) return res.status(400).json({ error: 'Invalid or expired reset link. Please request a new one.' });
+    const bcrypt = require('bcryptjs');
+    const hashed = await bcrypt.hash(password, 10);
+    await dbRun('UPDATE users SET password=? WHERE id=?', [hashed, resetToken.user_id]);
+    await dbRun('UPDATE reset_tokens SET used=1 WHERE id=?', [resetToken.id]);
+    res.json({ success: true, message: 'Password reset successfully! You can now log in.' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Warmup Routes ───────────────────────────────
 const warmupRouter = express.Router();
 warmupRouter.use(authMiddleware);
@@ -1045,6 +1084,12 @@ teamRouter.post('/invite', async (req, res) => {
     const id = require('uuid').v4();
     await dbRun('INSERT INTO team_members (id,owner_id,name,email,password,permissions,status) VALUES (?,?,?,?,?,?,?)',
       [id, req.userId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active']);
+    // Send invite email
+    try {
+      const owner = await dbGet('SELECT name FROM users WHERE id=?', [req.userId]);
+      const { sendTeamInviteEmail } = require('../services/emailSystem');
+      await sendTeamInviteEmail(owner?.name||'Your account owner', name||email, email.toLowerCase(), req.body.password, false);
+    } catch(e) { console.error('Invite email error:', e.message); }
     res.json({ success:true, id });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1102,6 +1147,12 @@ adminTeamRouter.post('/invite', requireAdminOrSuper, async (req, res) => {
     const id = require('uuid').v4();
     await dbRun('INSERT INTO users (id,name,email,password,role,is_super_admin,admin_permissions,plan,status) VALUES (?,?,?,?,?,?,?,?,?)',
       [id, name||'', email.toLowerCase(), hashed, 'admin', is_super_admin?1:0, admin_permissions||'{}', 'unlimited', 'active']);
+    // Send admin invite email
+    try {
+      const inviter = await dbGet('SELECT name FROM users WHERE id=?', [req.userId]);
+      const { sendTeamInviteEmail } = require('../services/emailSystem');
+      await sendTeamInviteEmail(inviter?.name||'AdoBoost Admin', name||email, email.toLowerCase(), req.body.password, true);
+    } catch(e) { console.error('Admin invite email error:', e.message); }
     res.json({ success:true, id });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
