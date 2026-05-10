@@ -537,6 +537,23 @@ messagesRouter.get('/auto-replies', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Delete a message thread
+messagesRouter.delete('/:id', async (req, res) => {
+  try {
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    if (!msg) return res.status(404).json({ error: 'Not found' });
+    // Delete all messages in the same thread (same subject base + same from_email)
+    const baseSubject = (msg.subject||'').replace(/^(Re:\s*|Fwd:\s*)+/gi,'').trim();
+    if (baseSubject) {
+      await dbRun(`DELETE FROM messages WHERE user_id=? AND (from_email=? OR status='sent') AND (subject LIKE ? OR subject LIKE ? OR subject=?)`,
+        [req.userId, msg.from_email, `%${baseSubject}%`, `Re: %${baseSubject}%`, baseSubject]);
+    } else {
+      await dbRun('DELETE FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // FIX #2: Mark message as read/unread
 messagesRouter.post('/:id/read', async (req, res) => {
   try {
