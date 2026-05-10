@@ -211,6 +211,13 @@ async function autoReplyWarmupEmails(account) {
 // ── Main warmup processor ────────────────────────
 async function processWarmup() {
   try {
+    // ── Skip weekends — warmup only runs Mon–Fri ──
+    const dayOfWeek = new Date().getDay(); // 0=Sun, 6=Sat
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      console.log('📅 Warmup skipped — weekend (Saturday/Sunday). Resumes Monday.');
+      return;
+    }
+
     // Get all warmup-enabled accounts
     const accounts = await dbAll(`
       SELECT * FROM email_accounts WHERE warmup_enabled=1
@@ -221,7 +228,7 @@ async function processWarmup() {
       return;
     }
 
-    console.log(`🌡️ Running warmup for ${accounts.length} accounts...`);
+    console.log(`🌡️ Running warmup for ${accounts.length} accounts (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dayOfWeek]})...`);
 
     for (const account of accounts) {
       try {
