@@ -229,6 +229,10 @@ function runMigrations() {
     `ALTER TABLE messages ADD COLUMN tag TEXT`,
     `ALTER TABLE messages ADD COLUMN replied INTEGER DEFAULT 0`,
     `ALTER TABLE messages ADD COLUMN message_id TEXT`,
+    // ── Signature column ──
+    `ALTER TABLE email_accounts ADD COLUMN signature TEXT DEFAULT ''`,
+    // ── Inbox rotation columns ──
+    `ALTER TABLE campaigns ADD COLUMN rotation_account_ids TEXT DEFAULT ''`,
     // ── Sending speed columns ──
     `ALTER TABLE email_accounts ADD COLUMN emails_per_hour INTEGER DEFAULT 10`,
     `ALTER TABLE email_accounts ADD COLUMN delay_min INTEGER DEFAULT 45`,
