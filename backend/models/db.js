@@ -184,6 +184,22 @@ function initSchema() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (account_id) REFERENCES email_accounts(id))`);
 
+    // Team members (per client account)
+    db.run(`CREATE TABLE IF NOT EXISTS team_members (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      name TEXT,
+      email TEXT NOT NULL,
+      password TEXT NOT NULL,
+      permissions TEXT DEFAULT '{}',
+      status TEXT DEFAULT 'active',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (owner_id) REFERENCES users(id))`);
+
+    // Admin columns on users table
+    db.run(`ALTER TABLE users ADD COLUMN is_super_admin INTEGER DEFAULT 0`, ()=>{});
+    db.run(`ALTER TABLE users ADD COLUMN admin_permissions TEXT DEFAULT '{}'`, ()=>{});
+
     // Subscriptions
     db.run(`CREATE TABLE IF NOT EXISTS subscriptions (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
