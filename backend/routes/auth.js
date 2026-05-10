@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { dbGet, dbRun } = require('../models/db');
 const { JWT_SECRET, authMiddleware } = require('../middleware/auth');
+const { sendWelcomeEmail } = require('../services/emailSystem');
 const router = express.Router();
 
 router.post('/register', async (req, res) => {
@@ -23,6 +24,10 @@ router.post('/register', async (req, res) => {
     await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key) VALUES (?,?,?,?,?,?,?,?)',
       [id, email, hashed, name, role, plan, planExpiry.toISOString(), apiKey]);
     const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
+    // Send welcome email (non-blocking — don't fail registration if email fails)
+    if (role !== 'admin') {
+      sendWelcomeEmail(name, email).catch(e => console.error('Welcome email error:', e.message));
+    }
     res.json({ token, user: { id, email, name, role, plan: 'trial' } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
