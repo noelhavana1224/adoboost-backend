@@ -15,10 +15,11 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 // ── Email Accounts ──────────────────────────────
 const emailAccountsRouter = express.Router();
 emailAccountsRouter.use(authMiddleware);
+emailAccountsRouter.use(effectiveUserMiddleware);
 
 emailAccountsRouter.get('/', async (req, res) => {
   try {
-    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.userId]);
+    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
     res.json(accounts);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -29,7 +30,7 @@ emailAccountsRouter.post('/', async (req, res) => {
     if (!username || !password || !from_email) return res.status(400).json({ error: 'username, password, from_email required' });
     const id = uuidv4();
     await dbRun(`INSERT INTO email_accounts (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, req.userId, name||from_email, type, host||'', port||587, (secure===true||secure===1||secure==='true')?1:0, username, password, from_name||'', from_email, daily_limit||100, imap_host||'', imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0]);
+      [id, req.effectiveUserId, name||from_email, type, host||'', port||587, (secure===true||secure===1||secure==='true')?1:0, username, password, from_name||'', from_email, daily_limit||100, imap_host||'', imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0]);
     const acc = await dbGet('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,status,imap_host,imap_port,imap_secure FROM email_accounts WHERE id=?', [id]);
     res.json(acc);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -64,7 +65,7 @@ emailAccountsRouter.post('/test-imap', async (req, res) => {
 // ── Sync inbox via IMAP ───────────────────────
 emailAccountsRouter.post('/:id/sync-inbox', async (req, res) => {
   try {
-    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
     if (!acc.imap_host) return res.status(400).json({ error: 'IMAP not configured for this account' });
     const { syncInbox } = require('../services/imapService');
@@ -112,7 +113,7 @@ emailAccountsRouter.post('/test-settings', async (req, res) => {
 
 emailAccountsRouter.post('/:id/test', async (req, res) => {
   try {
-    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
     const t = nodemailer.createTransport({
       host: acc.host, port: acc.port,
@@ -131,7 +132,7 @@ emailAccountsRouter.post('/:id/test', async (req, res) => {
 
 emailAccountsRouter.delete('/:id', async (req, res) => {
   try {
-    const r = await dbRun('DELETE FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const r = await dbRun('DELETE FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (r.changes===0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -140,11 +141,11 @@ emailAccountsRouter.delete('/:id', async (req, res) => {
 emailAccountsRouter.put('/:id', async (req, res) => {
   try {
     const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags, imap_host, imap_port, imap_secure, emails_per_hour, delay_min, delay_max, warmup_start_count, warmup_increment, warmup_max_count, signature } = req.body;
-    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
     const newPassword = password ? password : acc.password;
     await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=?,imap_host=?,imap_port=?,imap_secure=?,emails_per_hour=?,delay_min=?,delay_max=?,warmup_start_count=?,warmup_increment=?,warmup_max_count=?,signature=? WHERE id=? AND user_id=?',
-      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, emails_per_hour||acc.emails_per_hour||10, delay_min||acc.delay_min||45, delay_max||acc.delay_max||120, warmup_start_count||acc.warmup_start_count||5, warmup_increment||acc.warmup_increment||5, warmup_max_count||acc.warmup_max_count||50, signature!==undefined?signature:acc.signature||'', req.params.id, req.userId]);
+      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, emails_per_hour||acc.emails_per_hour||10, delay_min||acc.delay_min||45, delay_max||acc.delay_max||120, warmup_start_count||acc.warmup_start_count||5, warmup_increment||acc.warmup_increment||5, warmup_max_count||acc.warmup_max_count||50, signature!==undefined?signature:acc.signature||'', req.params.id, req.effectiveUserId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -152,6 +153,7 @@ emailAccountsRouter.put('/:id', async (req, res) => {
 // ── Contacts ────────────────────────────────────
 const contactsRouter = express.Router();
 contactsRouter.use(authMiddleware);
+contactsRouter.use(effectiveUserMiddleware);
 
 contactsRouter.get('/lists', async (req, res) => {
   try {
@@ -159,7 +161,7 @@ contactsRouter.get('/lists', async (req, res) => {
       COUNT(c.id) as total_contacts,
       SUM(CASE WHEN c.is_good=1 AND c.unsubscribed=0 THEN 1 ELSE 0 END) as good_contacts,
       SUM(CASE WHEN c.is_good=0 OR c.bounced=1 THEN 1 ELSE 0 END) as bad_contacts
-      FROM lists l LEFT JOIN contacts c ON l.id=c.list_id WHERE l.user_id=? GROUP BY l.id ORDER BY l.created_at DESC`, [req.userId]);
+      FROM lists l LEFT JOIN contacts c ON l.id=c.list_id WHERE l.user_id=? GROUP BY l.id ORDER BY l.created_at DESC`, [req.effectiveUserId]);
     res.json(lists);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -169,7 +171,7 @@ contactsRouter.post('/lists', async (req, res) => {
     const { name, description } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
     const id = uuidv4();
-    await dbRun('INSERT INTO lists (id,user_id,name,description) VALUES (?,?,?,?)', [id, req.userId, name, description||'']);
+    await dbRun('INSERT INTO lists (id,user_id,name,description) VALUES (?,?,?,?)', [id, req.effectiveUserId, name, description||'']);
     res.json(await dbGet('SELECT * FROM lists WHERE id=?', [id]));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -177,7 +179,7 @@ contactsRouter.post('/lists', async (req, res) => {
 contactsRouter.put('/lists/:id', async (req, res) => {
   try {
     const { name, description } = req.body;
-    const r = await dbRun('UPDATE lists SET name=?,description=? WHERE id=? AND user_id=?', [name, description||'', req.params.id, req.userId]);
+    const r = await dbRun('UPDATE lists SET name=?,description=? WHERE id=? AND user_id=?', [name, description||'', req.params.id, req.effectiveUserId]);
     if (r.changes===0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -185,8 +187,8 @@ contactsRouter.put('/lists/:id', async (req, res) => {
 
 contactsRouter.delete('/lists/:id', async (req, res) => {
   try {
-    await dbRun('DELETE FROM contacts WHERE list_id=? AND user_id=?', [req.params.id, req.userId]);
-    const r = await dbRun('DELETE FROM lists WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    await dbRun('DELETE FROM contacts WHERE list_id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    const r = await dbRun('DELETE FROM lists WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (r.changes===0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -196,7 +198,7 @@ contactsRouter.get('/', async (req, res) => {
   try {
     const { list_id, search, page=1, limit=50 } = req.query;
     const offset = (page-1)*limit;
-    let where = ['c.user_id=?']; const params = [req.userId];
+    let where = ['c.user_id=?']; const params = [req.effectiveUserId];
     if (list_id) { where.push('c.list_id=?'); params.push(list_id); }
     if (search) { where.push('(c.email LIKE ? OR c.first_name LIKE ? OR c.company LIKE ?)'); const s=`%${search}%`; params.push(s,s,s); }
     const w = 'WHERE ' + where.join(' AND ');
@@ -212,7 +214,7 @@ contactsRouter.post('/', async (req, res) => {
     if (!email) return res.status(400).json({ error: 'Email required' });
     const id = uuidv4();
     await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [id, req.userId, list_id||null, email.toLowerCase().trim(), first_name||'', last_name||'', company||'', title||'', phone||'', website||'', JSON.stringify(custom_fields||{})]);
+      [id, req.effectiveUserId, list_id||null, email.toLowerCase().trim(), first_name||'', last_name||'', company||'', title||'', phone||'', website||'', JSON.stringify(custom_fields||{})]);
     res.json(await dbGet('SELECT * FROM contacts WHERE id=?', [id]));
   } catch (e) {
     if (e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Email exists' });
@@ -271,11 +273,11 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
         for (const [field, col] of Object.entries(mapping)) {
           if (!standardFields.includes(field) && row[col]) custom[field] = row[col];
         }
-        const existing = await dbGet('SELECT id FROM contacts WHERE email=? AND user_id=?', [email, req.userId]);
+        const existing = await dbGet('SELECT id FROM contacts WHERE email=? AND user_id=?', [email, req.effectiveUserId]);
         if (existing) {
           if (duplicate_action === 'update') {
             await dbRun('UPDATE contacts SET first_name=?,last_name=?,company=?,title=?,phone=?,website=?,list_id=COALESCE(?,list_id),custom_fields=? WHERE id=? AND user_id=?',
-              [first_name, last_name, company, title, phone, website, list_id||null, JSON.stringify(custom), existing.id, req.userId]);
+              [first_name, last_name, company, title, phone, website, list_id||null, JSON.stringify(custom), existing.id, req.effectiveUserId]);
             updated++;
           } else { skipped++; }
         } else {
@@ -285,7 +287,7 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
           const importTags = importTagsRaw ? JSON.parse(importTagsRaw) : [];
           const tagsJson = JSON.stringify(importTags);
           await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields,tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            [id, req.userId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom), tagsJson]);
+            [id, req.effectiveUserId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom), tagsJson]);
           imported++;
         }
       } catch (e) { skipped++; errors.push(e.message); }
@@ -299,7 +301,7 @@ contactsRouter.post('/bulk-move', async (req, res) => {
     const { ids, list_id } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ error: 'No IDs provided' });
     for (const id of ids) {
-      await dbRun('UPDATE contacts SET list_id=? WHERE id=? AND user_id=?', [list_id||null, id, req.userId]);
+      await dbRun('UPDATE contacts SET list_id=? WHERE id=? AND user_id=?', [list_id||null, id, req.effectiveUserId]);
     }
     res.json({ success: true, moved: ids.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -323,7 +325,7 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
     let deleted = 0;
     for (const id of ids) {
       await dbRun('DELETE FROM sends WHERE contact_id=?', [id]);
-      const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [id, req.userId]);
+      const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [id, req.effectiveUserId]);
       if (r.changes > 0) deleted++;
     }
     res.json({ success: true, deleted });
@@ -333,7 +335,7 @@ contactsRouter.post('/bulk-delete', async (req, res) => {
 contactsRouter.put('/:id', async (req, res) => {
   try {
     const { email, first_name, last_name, company, title, phone, website, list_id, tags, custom_fields, linkedin, value_prop } = req.body;
-    const existing = await dbGet('SELECT * FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const existing = await dbGet('SELECT * FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!existing) return res.status(404).json({ error: 'Not found' });
     // Merge custom_fields with linkedin/value_prop
     let cf = {};
@@ -342,7 +344,7 @@ contactsRouter.put('/:id', async (req, res) => {
     if (linkedin !== undefined) cf.linkedin = linkedin;
     if (value_prop !== undefined) cf.value_prop = value_prop;
     await dbRun('UPDATE contacts SET email=?,first_name=?,last_name=?,company=?,title=?,phone=?,website=?,list_id=?,tags=?,custom_fields=? WHERE id=? AND user_id=?',
-      [email||existing.email, first_name||'', last_name||'', company||'', title||'', phone||'', website||'', list_id||null, tags||existing.tags||'[]', JSON.stringify(cf), req.params.id, req.userId]);
+      [email||existing.email, first_name||'', last_name||'', company||'', title||'', phone||'', website||'', list_id||null, tags||existing.tags||'[]', JSON.stringify(cf), req.params.id, req.effectiveUserId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -357,7 +359,7 @@ contactsRouter.delete('/:id', async (req, res) => {
       }
     }
     await dbRun('DELETE FROM sends WHERE contact_id=?', [req.params.id]);
-    const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const r = await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (r.changes === 0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -366,6 +368,7 @@ contactsRouter.delete('/:id', async (req, res) => {
 // ── Campaigns ───────────────────────────────────
 const campaignsRouter = express.Router();
 campaignsRouter.use(authMiddleware);
+campaignsRouter.use(effectiveUserMiddleware);
 
 campaignsRouter.get('/', async (req, res) => {
   try {
@@ -379,7 +382,7 @@ campaignsRouter.get('/', async (req, res) => {
       FROM campaigns c
       LEFT JOIN lists l ON c.list_id=l.id
       LEFT JOIN email_accounts ea ON c.email_account_id=ea.id
-      WHERE c.user_id=? ORDER BY c.created_at DESC`, [req.userId]);
+      WHERE c.user_id=? ORDER BY c.created_at DESC`, [req.effectiveUserId]);
     res.json(campaigns);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -403,7 +406,7 @@ campaignsRouter.get('/reports', async (req, res) => {
       LEFT JOIN email_accounts ea ON c.email_account_id=ea.id
       WHERE c.user_id=?
       ORDER BY c.created_at DESC
-    `, [req.userId]);
+    `, [req.effectiveUserId]);
     const enriched = camps.map(c => ({
       ...c,
       open_rate:   c.sent_count > 0 ? ((c.opened_count  / c.sent_count) * 100).toFixed(1) : '0.0',
@@ -417,7 +420,7 @@ campaignsRouter.get('/reports', async (req, res) => {
 
 campaignsRouter.get('/:id', async (req, res) => {
   try {
-    const c = await dbGet(`SELECT c.*,l.name as list_name,ea.from_email as account_email FROM campaigns c LEFT JOIN lists l ON c.list_id=l.id LEFT JOIN email_accounts ea ON c.email_account_id=ea.id WHERE c.id=? AND c.user_id=?`, [req.params.id, req.userId]);
+    const c = await dbGet(`SELECT c.*,l.name as list_name,ea.from_email as account_email FROM campaigns c LEFT JOIN lists l ON c.list_id=l.id LEFT JOIN email_accounts ea ON c.email_account_id=ea.id WHERE c.id=? AND c.user_id=?`, [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
     const sequences = await dbAll('SELECT * FROM sequences WHERE campaign_id=? ORDER BY step_number', [req.params.id]);
     res.json({ ...c, sequences });
@@ -430,7 +433,7 @@ campaignsRouter.post('/', async (req, res) => {
     if (!name) return res.status(400).json({ error: 'Name required' });
     const id = uuidv4();
     await dbRun('INSERT INTO campaigns (id,user_id,name,email_account_id,list_id,schedule_type,scheduled_at,daily_limit,track_opens,track_clicks) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      [id, req.userId, name, email_account_id||null, list_id||null, schedule_type||'immediate', scheduled_at||null, daily_limit||50, track_opens!==false?1:0, track_clicks!==false?1:0]);
+      [id, req.effectiveUserId, name, email_account_id||null, list_id||null, schedule_type||'immediate', scheduled_at||null, daily_limit||50, track_opens!==false?1:0, track_clicks!==false?1:0]);
     if (sequences?.length) {
       for (let i=0; i<sequences.length; i++) {
         const s=sequences[i];
@@ -444,11 +447,11 @@ campaignsRouter.post('/', async (req, res) => {
 
 campaignsRouter.put('/:id', async (req, res) => {
   try {
-    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
     const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences } = req.body;
     await dbRun('UPDATE campaigns SET name=?,email_account_id=?,list_id=?,schedule_type=?,scheduled_at=?,daily_limit=?,track_opens=?,track_clicks=? WHERE id=? AND user_id=?',
-      [name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens?1:0, track_clicks?1:0, req.params.id, req.userId]);
+      [name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens?1:0, track_clicks?1:0, req.params.id, req.effectiveUserId]);
     if (sequences) {
       await dbRun('DELETE FROM sequences WHERE campaign_id=?', [req.params.id]);
       for (let i=0; i<sequences.length; i++) {
@@ -463,7 +466,7 @@ campaignsRouter.put('/:id', async (req, res) => {
 
 campaignsRouter.post('/:id/launch', async (req, res) => {
   try {
-    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
     if (!c.email_account_id) return res.status(400).json({ error: 'Select an email account first' });
     if (!c.list_id) return res.status(400).json({ error: 'Select a contact list first' });
@@ -474,7 +477,7 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     const existingSends = await dbGet(`SELECT id FROM sends WHERE campaign_id=? AND status IN ('pending','sent') LIMIT 1`, [c.id]);
     if (existingSends) return res.status(400).json({ error: 'Campaign already launched. Use retry-failed or create a new campaign.' });
 
-    const contacts = await dbAll('SELECT * FROM contacts WHERE list_id=? AND unsubscribed=0 AND bounced=0 AND user_id=?', [c.list_id, req.userId]);
+    const contacts = await dbAll('SELECT * FROM contacts WHERE list_id=? AND unsubscribed=0 AND bounced=0 AND user_id=?', [c.list_id, req.effectiveUserId]);
     if (!contacts.length) return res.status(400).json({ error: 'No active contacts in list' });
     const now = new Date();
     let count = 0;
@@ -497,7 +500,7 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
 
 campaignsRouter.post('/:id/retry-failed', async (req, res) => {
   try {
-    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
     const now = new Date().toISOString();
     const result = await dbRun(`UPDATE sends SET status='pending', error_message=NULL, scheduled_at=? WHERE campaign_id=? AND status='failed'`, [now, req.params.id]);
@@ -507,18 +510,18 @@ campaignsRouter.post('/:id/retry-failed', async (req, res) => {
 });
 
 campaignsRouter.post('/:id/pause', async (req, res) => {
-  try { await dbRun(`UPDATE campaigns SET status='paused' WHERE id=? AND user_id=?`, [req.params.id, req.userId]); res.json({ success: true }); }
+  try { await dbRun(`UPDATE campaigns SET status='paused' WHERE id=? AND user_id=?`, [req.params.id, req.effectiveUserId]); res.json({ success: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 campaignsRouter.post('/:id/resume', async (req, res) => {
-  try { await dbRun(`UPDATE campaigns SET status='active' WHERE id=? AND user_id=?`, [req.params.id, req.userId]); res.json({ success: true }); }
+  try { await dbRun(`UPDATE campaigns SET status='active' WHERE id=? AND user_id=?`, [req.params.id, req.effectiveUserId]); res.json({ success: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 campaignsRouter.delete('/:id', async (req, res) => {
   try {
-    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
     await dbRun('DELETE FROM sends WHERE campaign_id=?', [req.params.id]);
     await dbRun('DELETE FROM sequences WHERE campaign_id=?', [req.params.id]);
@@ -537,12 +540,13 @@ campaignsRouter.get('/:id/sends', async (req, res) => {
 // ── Messages ────────────────────────────────────
 const messagesRouter = express.Router();
 messagesRouter.use(authMiddleware);
+messagesRouter.use(effectiveUserMiddleware);
 
 messagesRouter.get('/inbox', async (req, res) => {
   try {
     const { search, status, tag, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.is_auto_reply=0']; const params=[req.userId];
+    let where=['m.user_id=?','m.is_auto_reply=0']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     if (status) { where.push('m.status=?'); params.push(status); }
     if (tag) { where.push('m.tag=?'); params.push(tag); }
@@ -550,7 +554,7 @@ messagesRouter.get('/inbox', async (req, res) => {
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
     // FIX #7: Return unread count for badge display
-    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND m.status='unread'`, [req.userId])).n;
+    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND m.status='unread'`, [req.effectiveUserId])).n;
     res.json({ messages, total, page: Number(page), unread });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -559,7 +563,7 @@ messagesRouter.get('/auto-replies', async (req, res) => {
   try {
     const { search, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.is_auto_reply=1']; const params=[req.userId];
+    let where=['m.user_id=?','m.is_auto_reply=1']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
@@ -571,15 +575,15 @@ messagesRouter.get('/auto-replies', async (req, res) => {
 // Delete a message thread
 messagesRouter.delete('/:id', async (req, res) => {
   try {
-    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!msg) return res.status(404).json({ error: 'Not found' });
     // Delete all messages in the same thread (same subject base + same from_email)
     const baseSubject = (msg.subject||'').replace(/^(Re:\s*|Fwd:\s*)+/gi,'').trim();
     if (baseSubject) {
       await dbRun(`DELETE FROM messages WHERE user_id=? AND (from_email=? OR status='sent') AND (subject LIKE ? OR subject LIKE ? OR subject=?)`,
-        [req.userId, msg.from_email, `%${baseSubject}%`, `Re: %${baseSubject}%`, baseSubject]);
+        [req.effectiveUserId, msg.from_email, `%${baseSubject}%`, `Re: %${baseSubject}%`, baseSubject]);
     } else {
-      await dbRun('DELETE FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+      await dbRun('DELETE FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     }
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -589,7 +593,7 @@ messagesRouter.delete('/:id', async (req, res) => {
 messagesRouter.post('/:id/read', async (req, res) => {
   try {
     const { status = 'read' } = req.body; // 'read' or 'unread'
-    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!msg) return res.status(404).json({ error: 'Not found' });
     await dbRun('UPDATE messages SET status=? WHERE id=?', [status, req.params.id]);
     res.json({ success: true });
@@ -599,7 +603,7 @@ messagesRouter.post('/:id/read', async (req, res) => {
 messagesRouter.post('/:id/tag', async (req, res) => {
   try {
     const { tag } = req.body;
-    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!msg) return res.status(404).json({ error: 'Not found' });
     await dbRun('UPDATE messages SET tag=? WHERE id=?', [tag || null, req.params.id]);
     res.json({ success: true });
@@ -610,9 +614,9 @@ messagesRouter.post('/:id/reply', async (req, res) => {
   try {
     const { body, email_account_id, cc, bcc, forward_to, is_forward } = req.body;
     if (!body) return res.status(400).json({ error: 'Reply body required' });
-    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!msg) return res.status(404).json({ error: 'Message not found' });
-    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [email_account_id, req.userId]);
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [email_account_id, req.effectiveUserId]);
     if (!acc) return res.status(404).json({ error: 'Email account not found' });
     const transporter = nodemailer.createTransport({
       host: acc.host, port: acc.port,
@@ -645,7 +649,7 @@ messagesRouter.post('/:id/reply', async (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', 0)
     `, [
       uuidv4(),
-      req.userId,
+      req.effectiveUserId,
       msg.campaign_id || null,
       acc.from_email,
       acc.from_name || acc.from_email,
@@ -661,12 +665,13 @@ messagesRouter.post('/:id/reply', async (req, res) => {
 // ── Exclusions ──────────────────────────────────
 const exclusionsRouter = express.Router();
 exclusionsRouter.use(authMiddleware);
+exclusionsRouter.use(effectiveUserMiddleware);
 
 exclusionsRouter.get('/', async (req, res) => {
   try {
     const { search, type, page=1, limit=10 } = req.query;
     const offset = (page-1)*limit;
-    let where=['user_id=?']; const params=[req.userId];
+    let where=['user_id=?']; const params=[req.effectiveUserId];
     if (search) { where.push('value LIKE ?'); params.push(`%${search}%`); }
     if (type) { where.push('type=?'); params.push(type); }
     const w='WHERE '+where.join(' AND ');
@@ -681,8 +686,8 @@ exclusionsRouter.get('/unsubscribes', async (req, res) => {
   try {
     const { page=1, limit=10 } = req.query;
     const offset = (page-1)*limit;
-    const items = await dbAll(`SELECT u.*,c.name as campaign_name FROM unsubscribes u LEFT JOIN campaigns c ON u.campaign_id=c.id WHERE u.user_id=? ORDER BY u.created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, [req.userId]);
-    const total = (await dbGet('SELECT COUNT(*) as n FROM unsubscribes WHERE user_id=?', [req.userId])).n;
+    const items = await dbAll(`SELECT u.*,c.name as campaign_name FROM unsubscribes u LEFT JOIN campaigns c ON u.campaign_id=c.id WHERE u.user_id=? ORDER BY u.created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, [req.effectiveUserId]);
+    const total = (await dbGet('SELECT COUNT(*) as n FROM unsubscribes WHERE user_id=?', [req.effectiveUserId])).n;
     res.json({ items, total });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -692,7 +697,7 @@ exclusionsRouter.post('/', async (req, res) => {
     const { value, type='email' } = req.body;
     if (!value) return res.status(400).json({ error: 'Value required' });
     const id = uuidv4();
-    await dbRun('INSERT OR IGNORE INTO exclusions (id,user_id,value,type) VALUES (?,?,?,?)', [id, req.userId, value.toLowerCase().trim(), type]);
+    await dbRun('INSERT OR IGNORE INTO exclusions (id,user_id,value,type) VALUES (?,?,?,?)', [id, req.effectiveUserId, value.toLowerCase().trim(), type]);
     res.json(await dbGet('SELECT * FROM exclusions WHERE id=?', [id]));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -704,7 +709,7 @@ exclusionsRouter.post('/import', upload.single('file'), async (req, res) => {
     let imported=0;
     for (const line of lines) {
       const value = line.split(',')[0].trim().toLowerCase();
-      if (value) { const id=uuidv4(); await dbRun('INSERT OR IGNORE INTO exclusions (id,user_id,value,type) VALUES (?,?,?,?)', [id,req.userId,value,'email']); imported++; }
+      if (value) { const id=uuidv4(); await dbRun('INSERT OR IGNORE INTO exclusions (id,user_id,value,type) VALUES (?,?,?,?)', [id,req.effectiveUserId,value,'email']); imported++; }
     }
     res.json({ imported });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -712,7 +717,7 @@ exclusionsRouter.post('/import', upload.single('file'), async (req, res) => {
 
 exclusionsRouter.delete('/:id', async (req, res) => {
   try {
-    await dbRun('DELETE FROM exclusions WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    await dbRun('DELETE FROM exclusions WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -720,11 +725,12 @@ exclusionsRouter.delete('/:id', async (req, res) => {
 // ── Templates ───────────────────────────────────
 const templatesRouter = express.Router();
 templatesRouter.use(authMiddleware);
+templatesRouter.use(effectiveUserMiddleware);
 
 templatesRouter.get('/', async (req, res) => {
   try {
     const { search } = req.query;
-    let where=['user_id=?']; const params=[req.userId];
+    let where=['user_id=?']; const params=[req.effectiveUserId];
     if (search) { where.push('name LIKE ?'); params.push(`%${search}%`); }
     const items = await dbAll(`SELECT * FROM templates WHERE ${where.join(' AND ')} ORDER BY created_at DESC`, params);
     res.json(items);
@@ -736,7 +742,7 @@ templatesRouter.post('/', async (req, res) => {
     const { name, subject, body, category } = req.body;
     if (!name || !body) return res.status(400).json({ error: 'Name and body required' });
     const id = uuidv4();
-    await dbRun('INSERT INTO templates (id,user_id,name,subject,body,category) VALUES (?,?,?,?,?,?)', [id, req.userId, name, subject||'', body, category||'general']);
+    await dbRun('INSERT INTO templates (id,user_id,name,subject,body,category) VALUES (?,?,?,?,?,?)', [id, req.effectiveUserId, name, subject||'', body, category||'general']);
     res.json(await dbGet('SELECT * FROM templates WHERE id=?', [id]));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -744,14 +750,14 @@ templatesRouter.post('/', async (req, res) => {
 templatesRouter.put('/:id', async (req, res) => {
   try {
     const { name, subject, body, category } = req.body;
-    await dbRun('UPDATE templates SET name=?,subject=?,body=?,category=? WHERE id=? AND user_id=?', [name, subject, body, category, req.params.id, req.userId]);
+    await dbRun('UPDATE templates SET name=?,subject=?,body=?,category=? WHERE id=? AND user_id=?', [name, subject, body, category, req.params.id, req.effectiveUserId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 templatesRouter.delete('/:id', async (req, res) => {
   try {
-    await dbRun('DELETE FROM templates WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    await dbRun('DELETE FROM templates WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1059,6 +1065,14 @@ warmupRouter.get('/stats', async (req, res) => {
     res.json(stats);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ── Effective User ID Middleware ─────────────────
+// For team members: use ownerId (they share the owner's workspace)
+// For regular users: use their own userId
+function effectiveUserMiddleware(req, res, next) {
+  req.effectiveUserId = req.ownerId || req.userId;
+  next();
+}
 
 // ── Team Members Router (client-facing) ─────────
 const teamRouter = express.Router();
