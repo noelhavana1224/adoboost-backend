@@ -1066,13 +1066,43 @@ teamRouter.use(authMiddleware);
 
 teamRouter.get('/', async (req, res) => {
   try {
-    const members = await dbAll('SELECT id,name,email,permissions,status,created_at FROM team_members WHERE owner_id=? ORDER BY created_at DESC', [req.userId]);
-    res.json(members);
+    // If logged in as team member, use their owner_id to get the full team
+    const ownerId = req.ownerId || req.userId;
+
+    // Get all team members for this account
+    const members = await dbAll(
+      'SELECT id,name,email,permissions,status,created_at FROM team_members WHERE owner_id=? ORDER BY created_at DESC',
+      [ownerId]
+    );
+
+    // Also get the owner info so team members can see who the account owner is
+    const owner = await dbGet('SELECT id,name,email,plan,created_at FROM users WHERE id=?', [ownerId]);
+
+    // Build response: owner first, then team members
+    const result = [];
+    if (owner) {
+      result.push({
+        id: owner.id,
+        name: owner.name,
+        email: owner.email,
+        permissions: '{}',
+        status: 'active',
+        created_at: owner.created_at,
+        is_owner: true,
+      });
+    }
+    result.push(...members);
+    res.json(result);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 teamRouter.post('/invite', async (req, res) => {
   try {
+    // Check if team member has invite permission
+    if (req.userRole === 'team_member') {
+      const perms = req.permissions || {};
+      if (!perms.team_invite) return res.status(403).json({ error: 'You do not have permission to invite team members' });
+    }
     const { name, email, password, permissions } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
     const existing = await dbGet('SELECT id FROM users WHERE email=?', [email.toLowerCase()]);
@@ -1084,11 +1114,12 @@ teamRouter.post('/invite', async (req, res) => {
     const tempPassword = password || crypto.randomBytes(8).toString('hex');
     const hashed = await bcrypt.hash(tempPassword, 10);
     const id = require('uuid').v4();
+    const ownerId = req.ownerId || req.userId;
     await dbRun('INSERT INTO team_members (id,owner_id,name,email,password,permissions,status) VALUES (?,?,?,?,?,?,?)',
-      [id, req.userId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active']);
+      [id, ownerId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active']);
     // Send invite email
     try {
-      const owner = await dbGet('SELECT name FROM users WHERE id=?', [req.userId]);
+      const owner = await dbGet('SELECT name FROM users WHERE id=?', [ownerId]);
       const { sendTeamInviteEmail } = require('../services/emailSystem');
       await sendTeamInviteEmail(owner?.name||'Your account owner', name||email, email.toLowerCase(), tempPassword, false);
     } catch(e) { console.error('Invite email error:', e.message); }
