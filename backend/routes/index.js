@@ -1092,7 +1092,20 @@ teamRouter.get('/', async (req, res) => {
       });
     }
     result.push(...members);
-    res.json(result);
+    // Add seat info to response
+    const SEAT_LIMITS = { trial:1, starter:1, professional:3, unlimited:10 };
+    const ownerInfo = await dbGet('SELECT plan FROM users WHERE id=?', [ownerId]);
+    const ownerPlan = (ownerInfo?.plan || 'trial').toLowerCase();
+    const maxSeats = SEAT_LIMITS[ownerPlan] || 1;
+
+    res.json({
+      members: result,
+      seats: {
+        used: result.length, // owner + team members
+        max: maxSeats,
+        plan: ownerPlan,
+      }
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1105,6 +1118,25 @@ teamRouter.post('/invite', async (req, res) => {
     }
     const { name, email, password, permissions } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
+
+    // ── Seat limit check ──────────────────────────
+    const SEAT_LIMITS = { trial:1, starter:1, professional:3, unlimited:10 };
+    const ownerId = req.ownerId || req.userId;
+    const owner = await dbGet('SELECT plan FROM users WHERE id=?', [ownerId]);
+    const ownerPlan = (owner?.plan || 'trial').toLowerCase();
+    const maxSeats = SEAT_LIMITS[ownerPlan] || 1;
+    const currentMembers = await dbGet('SELECT COUNT(*) as c FROM team_members WHERE owner_id=? AND status!=?', [ownerId, 'removed']);
+    const usedSeats = (currentMembers?.c || 0) + 1; // +1 for the owner
+    if (usedSeats >= maxSeats) {
+      const planLabel = ownerPlan.charAt(0).toUpperCase() + ownerPlan.slice(1);
+      return res.status(403).json({
+        error: `Seat limit reached`,
+        message: `Your ${planLabel} plan includes ${maxSeats} seat${maxSeats>1?'s':''} (${usedSeats}/${maxSeats} used). Upgrade your plan to add more team members.`,
+        seats_used: usedSeats,
+        seats_max: maxSeats,
+        plan: ownerPlan,
+      });
+    }
     const existing = await dbGet('SELECT id FROM users WHERE email=?', [email.toLowerCase()]);
     if (existing) return res.status(409).json({ error: 'This email already has an AdoBoost account' });
     const existingMember = await dbGet('SELECT id FROM team_members WHERE email=? AND owner_id=?', [email.toLowerCase(), req.userId]);
