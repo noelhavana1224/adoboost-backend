@@ -1146,14 +1146,13 @@ teamRouter.post('/invite', async (req, res) => {
     const tempPassword = password || crypto.randomBytes(8).toString('hex');
     const hashed = await bcrypt.hash(tempPassword, 10);
     const id = require('uuid').v4();
-    const ownerId = req.ownerId || req.userId;
     await dbRun('INSERT INTO team_members (id,owner_id,name,email,password,permissions,status) VALUES (?,?,?,?,?,?,?)',
       [id, ownerId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active']);
     // Send invite email
     try {
-      const owner = await dbGet('SELECT name FROM users WHERE id=?', [ownerId]);
+      const ownerData = await dbGet('SELECT name FROM users WHERE id=?', [ownerId]);
       const { sendTeamInviteEmail } = require('../services/emailSystem');
-      await sendTeamInviteEmail(owner?.name||'Your account owner', name||email, email.toLowerCase(), tempPassword, false);
+      await sendTeamInviteEmail(ownerData?.name||'Your account owner', name||email, email.toLowerCase(), tempPassword, false);
     } catch(e) { console.error('Invite email error:', e.message); }
     res.json({ success:true, id });
   } catch(e) { res.status(500).json({ error: e.message }); }
