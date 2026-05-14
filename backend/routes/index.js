@@ -19,7 +19,7 @@ emailAccountsRouter.use(effectiveUserMiddleware);
 
 emailAccountsRouter.get('/', async (req, res) => {
   try {
-    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
+    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,warmup_health,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
     res.json(accounts);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
