@@ -8,7 +8,8 @@ const { processWarmup } = require('./services/warmupService');
 const {
   emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
   exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
-  trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter
+  trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
+  vaUpsellRouter
 } = require('./routes/index');
 
 const app = express();
@@ -46,6 +47,7 @@ app.use('/api/admin',          adminRouter);
 app.use('/api/warmup',         warmupRouter);
 app.use('/api/team-members',   teamRouter);
 app.use('/api/admin/team',     adminTeamRouter);
+app.use('/api',                vaUpsellRouter);
 app.use('/api/auth',           require('./routes/authSystem'));  // forgot/reset password
 
 app.get('/api/health', (req, res) => res.json({
