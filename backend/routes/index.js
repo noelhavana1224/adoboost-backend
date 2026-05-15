@@ -1266,7 +1266,6 @@ adminTeamRouter.delete('/:id', requireAdminOrSuper, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 // ── VA Upsell ──────────────────────────────────────
-const { v4: uuidv4 } = require('uuid');
 const { sendSystemEmail } = require('../services/emailSystem');
 
 // Record VA interest + email sales
