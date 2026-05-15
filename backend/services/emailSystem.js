@@ -119,6 +119,17 @@ function teamInviteEmail(inviterName, memberName, email, password, isAdmin = fal
 }
 
 // ── Send helpers ─────────────────────────────────
+
+async function sendSystemEmail({ to, subject, html, text }) {
+  try {
+    const mailer = createSystemMailer();
+    await mailer.sendMail({ from: FROM, to, subject, html, text });
+    console.log(`✅ System email sent to ${to}`);
+  } catch (e) {
+    console.error(`❌ System email failed to ${to}:`, e.message);
+    throw e;
+  }
+}
 async function sendWelcomeEmail(name, email) {
   try {
     const mailer = createSystemMailer();
@@ -143,4 +154,4 @@ async function sendTeamInviteEmail(inviterName, memberName, email, password, isA
   } catch (e) { console.error(`❌ Invite email failed:`, e.message); }
 }
 
-module.exports = { sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail };
+module.exports = { sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail };
