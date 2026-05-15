@@ -1267,9 +1267,10 @@ adminTeamRouter.delete('/:id', requireAdminOrSuper, async (req, res) => {
 });
 // ── VA Upsell ──────────────────────────────────────
 const { sendSystemEmail } = require('../services/emailSystem');
+const vaUpsellRouter = express.Router();
 
 // Record VA interest + email sales
-router.post('/va-interest', authMiddleware, async (req, res) => {
+vaUpsellRouter.post('/va-interest', authMiddleware, async (req, res) => {
   try {
     const { va_type, hours_type, notes } = req.body;
     if (!va_type) return res.status(400).json({ error: 'va_type required' });
@@ -1286,7 +1287,6 @@ router.post('/va-interest', authMiddleware, async (req, res) => {
       [id, user.id, user.email, user.name, va_type, hours_type || null, notes || null, now]
     );
 
-    // Email sales — don't fail the request if email errors
     try {
       await sendSystemEmail({
         to: 'sales@adobosolutions.com',
@@ -1312,7 +1312,7 @@ router.post('/va-interest', authMiddleware, async (req, res) => {
 });
 
 // Dismiss the upsell (snoozes for 7 days)
-router.post('/va-upsell/dismiss', authMiddleware, async (req, res) => {
+vaUpsellRouter.post('/va-upsell/dismiss', authMiddleware, async (req, res) => {
   try {
     await dbRun('UPDATE users SET va_upsell_dismissed_at=? WHERE id=?', [new Date().toISOString(), req.userId]);
     res.json({ ok: true });
@@ -1322,7 +1322,7 @@ router.post('/va-upsell/dismiss', authMiddleware, async (req, res) => {
 });
 
 // Should the upsell show for this user?
-router.get('/va-upsell/status', authMiddleware, async (req, res) => {
+vaUpsellRouter.get('/va-upsell/status', authMiddleware, async (req, res) => {
   try {
     const user = await dbGet('SELECT va_upsell_dismissed_at FROM users WHERE id=?', [req.userId]);
     const dismissed = user?.va_upsell_dismissed_at;
@@ -1336,4 +1336,5 @@ router.get('/va-upsell/status', authMiddleware, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter };
+
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter };
