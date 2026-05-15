@@ -1265,5 +1265,76 @@ adminTeamRouter.delete('/:id', requireAdminOrSuper, async (req, res) => {
     res.json({ success:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
+// ── VA Upsell ──────────────────────────────────────
+const { v4: uuidv4 } = require('uuid');
+const { sendSystemEmail } = require('../services/emailSystem');
 
+// Record VA interest + email sales
+router.post('/va-interest', authMiddleware, async (req, res) => {
+  try {
+    const { va_type, hours_type, notes } = req.body;
+    if (!va_type) return res.status(400).json({ error: 'va_type required' });
+
+    const user = await dbGet('SELECT id, name, email FROM users WHERE id=?', [req.userId]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const id = uuidv4();
+    const now = new Date().toISOString();
+
+    await dbRun(
+      `INSERT INTO va_interest (id, user_id, user_email, user_name, va_type, hours_type, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, user.id, user.email, user.name, va_type, hours_type || null, notes || null, now]
+    );
+
+    // Email sales — don't fail the request if email errors
+    try {
+      await sendSystemEmail({
+        to: 'sales@adobosolutions.com',
+        subject: `🎯 New VA Interest: ${user.name || user.email}`,
+        html: `
+          <h2>New VA Interest</h2>
+          <p><strong>User:</strong> ${user.name || '(no name)'} &lt;${user.email}&gt;</p>
+          <p><strong>VA Type:</strong> ${va_type}</p>
+          <p><strong>Hours:</strong> ${hours_type || 'not specified'}</p>
+          <p><strong>Notes:</strong> ${notes || '(none)'}</p>
+          <p><em>Logged at ${now}</em></p>
+        `
+      });
+    } catch (e) {
+      console.error('VA interest email failed (record still saved):', e.message);
+    }
+
+    res.json({ ok: true, id });
+  } catch (e) {
+    console.error('POST /va-interest error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Dismiss the upsell (snoozes for 7 days)
+router.post('/va-upsell/dismiss', authMiddleware, async (req, res) => {
+  try {
+    await dbRun('UPDATE users SET va_upsell_dismissed_at=? WHERE id=?', [new Date().toISOString(), req.userId]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Should the upsell show for this user?
+router.get('/va-upsell/status', authMiddleware, async (req, res) => {
+  try {
+    const user = await dbGet('SELECT va_upsell_dismissed_at FROM users WHERE id=?', [req.userId]);
+    const dismissed = user?.va_upsell_dismissed_at;
+    let show = true;
+    if (dismissed) {
+      const daysSince = (Date.now() - new Date(dismissed).getTime()) / (1000 * 60 * 60 * 24);
+      show = daysSince >= 7;
+    }
+    res.json({ show });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter };
