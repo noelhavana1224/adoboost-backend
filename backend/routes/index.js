@@ -4,8 +4,9 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { dbGet, dbAll, dbRun } = require('../models/db');
-const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { authMiddleware, adminMiddleware, JWT_SECRET } = require('../middleware/auth');
 const nodemailer = require('nodemailer');
+const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const bcrypt = require('bcryptjs');
