@@ -47,6 +47,7 @@ app.use('/api/admin',          adminRouter);
 app.use('/api/warmup',         warmupRouter);
 app.use('/api/team-members',   teamRouter);
 app.use('/api/admin/team',     adminTeamRouter);
+app.use('/api/admin/support',  supportRouter);
 app.use('/api',                vaUpsellRouter);
 app.use('/api/auth',           require('./routes/authSystem'));  // forgot/reset password
 
