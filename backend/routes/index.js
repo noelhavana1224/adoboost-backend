@@ -1337,4 +1337,82 @@ vaUpsellRouter.get('/va-upsell/status', authMiddleware, async (req, res) => {
   }
 });
 
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter };
+// ── Admin Support Sessions ─────────────────────────────
+const supportRouter = express.Router();
+
+// Start a support session — admin only
+supportRouter.post('/start', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { target_user_id } = req.body;
+    if (!target_user_id) return res.status(400).json({ error: 'target_user_id required' });
+
+    const target = await dbGet('SELECT id, email, name FROM users WHERE id=?', [target_user_id]);
+    if (!target) return res.status(404).json({ error: 'Target user not found' });
+
+    // Block admin from support-viewing another admin
+    const targetUser = await dbGet('SELECT role FROM users WHERE id=?', [target_user_id]);
+    if (targetUser?.role === 'admin') {
+      return res.status(403).json({ error: 'Cannot start support session on another admin account.' });
+    }
+
+    const sessionId = uuidv4();
+    const now = new Date().toISOString();
+    const ip = req.headers['x-forwarded-for'] || req.connection?.remoteAddress || null;
+    const userAgent = req.headers['user-agent'] || null;
+
+    await dbRun(
+      `INSERT INTO support_sessions (id, admin_id, admin_email, target_user_id, target_user_email, started_at, ip, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, req.userId, req.user.email, target.id, target.email, now, ip, userAgent]
+    );
+
+    // 30-minute support token
+    const token = jwt.sign(
+      { userId: target.id, adminId: req.userId, support: true, sessionId },
+      JWT_SECRET,
+      { expiresIn: '30m' }
+    );
+
+    res.json({
+      token,
+      target: { id: target.id, name: target.name, email: target.email },
+      expires_in: 30 * 60,
+      session_id: sessionId,
+    });
+  } catch (e) {
+    console.error('POST /admin/support/start error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// End a support session — called when admin clicks Exit
+supportRouter.post('/end', authMiddleware, async (req, res) => {
+  try {
+    if (!req.isSupport) return res.status(400).json({ error: 'Not in a support session' });
+    const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
+    const sessionId = decoded.sessionId;
+    if (sessionId) {
+      await dbRun(
+        'UPDATE support_sessions SET ended_at=?, ended_reason=? WHERE id=? AND ended_at IS NULL',
+        [new Date().toISOString(), 'manual', sessionId]
+      );
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List support sessions (audit log) — admin only
+supportRouter.get('/sessions', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const sessions = await dbAll(
+      `SELECT * FROM support_sessions ORDER BY started_at DESC LIMIT 100`
+    );
+    res.json({ sessions });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter };
