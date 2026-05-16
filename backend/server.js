@@ -9,7 +9,7 @@ const {
   emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
   exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
   trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
-  vaUpsellRouter
+  vaUpsellRouter, supportRouter
 } = require('./routes/index');
 
 const app = express();
