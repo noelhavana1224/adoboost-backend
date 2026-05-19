@@ -1415,5 +1415,27 @@ supportRouter.get('/sessions', authMiddleware, adminMiddleware, async (req, res)
     res.status(500).json({ error: e.message });
   }
 });
+// ── Internal Triggers (called by Hostinger cron) ──
+const internalRouter = express.Router();
 
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter };
+function requireCronSecret(req, res, next) {
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
+  if (auth.split(' ')[1] !== process.env.CRON_SECRET) return res.status(401).json({ error: 'Invalid secret' });
+  next();
+}
+
+internalRouter.post('/trigger-warmup', requireCronSecret, async (req, res) => {
+  console.log('🔔 Warmup triggered by cron at', new Date().toISOString());
+  // Respond immediately so the cron doesn't time out
+  res.json({ ok: true, started_at: new Date().toISOString() });
+  // Run warmup in background
+  try {
+    const { processWarmup } = require('../services/warmupService');
+    await processWarmup();
+    console.log('✅ Warmup completed at', new Date().toISOString());
+  } catch (e) {
+    console.error('❌ Warmup failed:', e.message);
+  }
+});
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter };
