@@ -7,7 +7,7 @@ const SYSTEM_SMTP = {
   port: parseInt(process.env.SYSTEM_SMTP_PORT || '465'),
   user: process.env.SYSTEM_SMTP_USER || 'noreply@adobosolutions.com',
   // IMPORTANT: Update this password if you change noreply@adobosolutions.com password
-  pass: process.env.SYSTEM_SMTP_PASS || 'pXS>J??*X3i|',
+  pass: process.env.SYSTEM_SMTP_PASS,
 };
 
 function createSystemMailer() {
