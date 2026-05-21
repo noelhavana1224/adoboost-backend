@@ -31,10 +31,11 @@ router.post('/register', async (req, res) => {
 
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password: rawPassword } = req.body;
+    const password = (rawPassword || '').trim(); // trim whitespace from copy-paste
 
     // Check main users table first
-    let user = await dbGet('SELECT * FROM users WHERE LOWER(email)=?', [email.toLowerCase()]);
+    let user = await dbGet('SELECT * FROM users WHERE LOWER(email)=?', [email.toLowerCase().trim()]);
 
     if (user) {
       // Regular user login
@@ -47,7 +48,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Check team_members table
-    const member = await dbGet('SELECT * FROM team_members WHERE LOWER(email)=?', [email.toLowerCase()]);
+    const member = await dbGet('SELECT * FROM team_members WHERE LOWER(email)=?', [email.toLowerCase().trim()]);
     if (member) {
       if (member.status === 'inactive') return res.status(403).json({ error: 'Your account has been deactivated. Contact your account owner.' });
       const valid = await bcrypt.compare(password, member.password);

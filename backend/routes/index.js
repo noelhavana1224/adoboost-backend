@@ -1171,7 +1171,7 @@ teamRouter.post('/invite', async (req, res) => {
       const { sendTeamInviteEmail } = require('../services/emailSystem');
       await sendTeamInviteEmail(ownerData?.name||'Your account owner', name||email, email.toLowerCase(), tempPassword, false);
     } catch(e) { console.error('Invite email error:', e.message); }
-    res.json({ success:true, id });
+    res.json({ success:true, id, tempPassword, email: email.toLowerCase(), name: name||email });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
