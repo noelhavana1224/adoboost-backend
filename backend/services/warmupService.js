@@ -259,8 +259,8 @@ async function processWarmup() {
         if (!partners.length) continue;
 
         let sent = 0;
-        for (let i = 0; i < toSend && i < partners.length; i++) {
-          // Rotate through partners
+        for (let i = 0; i < toSend; i++) {
+          // Rotate through partners (repeats if toSend > pool size)
           const partner = partners[i % partners.length];
           const result = await sendWarmupEmail(account, partner);
           if (result.success) {

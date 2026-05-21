@@ -20,7 +20,7 @@ emailAccountsRouter.use(effectiveUserMiddleware);
 
 emailAccountsRouter.get('/', async (req, res) => {
   try {
-    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,warmup_health,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
+    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,warmup_enabled,warmup_days,warmup_health,last_warmup_at,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
     res.json(accounts);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1042,6 +1042,7 @@ authSystemRouter.post('/reset-password', async (req, res) => {
 // ── Warmup Routes ───────────────────────────────
 const warmupRouter = express.Router();
 warmupRouter.use(authMiddleware);
+warmupRouter.use(effectiveUserMiddleware);
 
 warmupRouter.get('/logs/:accountId', async (req, res) => {
   try {
@@ -1054,14 +1055,15 @@ warmupRouter.get('/logs/:accountId', async (req, res) => {
 
 warmupRouter.get('/stats', async (req, res) => {
   try {
-    const accounts = await dbAll('SELECT id, from_email, warmup_enabled, warmup_health, warmup_days FROM email_accounts WHERE user_id=?', [req.userId]);
+    const accounts = await dbAll('SELECT id, from_email, warmup_enabled, warmup_health, warmup_days, last_warmup_at FROM email_accounts WHERE user_id=?', [req.effectiveUserId]);
     const today = new Date().toISOString().split('T')[0];
     const stats = [];
     for (const acc of accounts) {
       const sentToday = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='sent' AND DATE(created_at)=?`, [acc.id, today]);
+      const failedToday = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='failed' AND DATE(created_at)=?`, [acc.id, today]);
       const totalSent = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='sent'`, [acc.id]);
       const totalReplied = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='replied' AND status='sent'`, [acc.id]);
-      stats.push({ ...acc, sent_today: sentToday?.c||0, total_sent: totalSent?.c||0, total_replied: totalReplied?.c||0 });
+      stats.push({ ...acc, sent_today: sentToday?.c||0, failed_today: failedToday?.c||0, total_sent: totalSent?.c||0, total_replied: totalReplied?.c||0 });
     }
     res.json(stats);
   } catch (e) { res.status(500).json({ error: e.message }); }
