@@ -1481,6 +1481,55 @@ supportRouter.get('/sessions', authMiddleware, adminMiddleware, async (req, res)
     res.status(500).json({ error: e.message });
   }
 });
+// ── Plan Usage ──────────────────────────────────
+const usageRouter = express.Router();
+usageRouter.use(authMiddleware);
+usageRouter.use(effectiveUserMiddleware);
+
+usageRouter.get('/', async (req, res) => {
+  try {
+    const uid = req.effectiveUserId;
+
+    // Owner's plan (team members resolve to owner via effectiveUserMiddleware)
+    const owner = await dbGet('SELECT plan, name, email, role FROM users WHERE id=?', [uid]);
+    const planSlug = (owner?.plan || 'trial').toLowerCase();
+
+    // Map plan slug → plans table id
+    const planIdMap = {
+      trial:        'plan_trial',
+      starter:      'plan_starter',
+      professional: 'plan_pro',
+      unlimited:    'plan_unlimited',
+    };
+    const planRow = await dbGet('SELECT * FROM plans WHERE id=?', [planIdMap[planSlug] || 'plan_trial']);
+
+    // Count current usage in parallel
+    const [contacts, campaigns, emailAccounts, sentRow] = await Promise.all([
+      dbGet(`SELECT COUNT(*) as n FROM contacts WHERE user_id=?`, [uid]),
+      dbGet(`SELECT COUNT(*) as n FROM campaigns WHERE user_id=?`, [uid]),
+      dbGet(`SELECT COUNT(*) as n FROM email_accounts WHERE user_id=?`, [uid]),
+      dbGet(`SELECT COALESCE(SUM(sent_today),0) as n FROM email_accounts WHERE user_id=?`, [uid]),
+    ]);
+
+    res.json({
+      plan: planSlug,
+      plan_name: planRow?.name || planSlug,
+      limits: {
+        max_contacts:       planRow?.max_contacts       || 200,
+        max_campaigns:      planRow?.max_campaigns      || 2,
+        max_email_accounts: planRow?.max_email_accounts || 1,
+        max_emails_per_day: planRow?.max_emails_per_day || 50,
+      },
+      usage: {
+        contacts:         contacts?.n        || 0,
+        campaigns:        campaigns?.n       || 0,
+        email_accounts:   emailAccounts?.n   || 0,
+        emails_sent_today: sentRow?.n        || 0,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Internal Triggers (called by Hostinger cron) ──
 const internalRouter = express.Router();
 
@@ -1504,4 +1553,4 @@ internalRouter.post('/trigger-warmup', requireCronSecret, async (req, res) => {
     console.error('❌ Warmup failed:', e.message);
   }
 });
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter };
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter, usageRouter };

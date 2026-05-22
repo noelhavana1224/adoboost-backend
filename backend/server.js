@@ -9,7 +9,7 @@ const {
   emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
   exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
   trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
-  vaUpsellRouter, supportRouter, internalRouter
+  vaUpsellRouter, supportRouter, internalRouter, usageRouter
 } = require('./routes/index');
 
 const app = express();
@@ -50,6 +50,7 @@ app.use('/api/admin/team',     adminTeamRouter);
 app.use('/api/admin/support',  supportRouter);
 app.use('/api',                vaUpsellRouter);
 app.use('/api/auth',           require('./routes/authSystem'));  // forgot/reset password
+app.use('/api/usage',          usageRouter);
 app.use('/api/internal',       internalRouter);
 
 app.get('/api/health', (req, res) => res.json({
