@@ -2,6 +2,7 @@ const nodemailer = require('nodemailer');
 const Handlebars = require('handlebars');
 const { dbAll, dbRun, dbGet } = require('../models/db');
 const { v4: uuidv4 } = require('uuid');
+const { getTzOffsetMs, getHourInTz } = require('../utils/timezone');
 
 const BASE_URL = () => process.env.BASE_URL || 'https://api.adobosolutions.com';
 
@@ -55,9 +56,9 @@ const SENDING_PRESETS = {
 };
 
 // ── Check if current time is inside account's sending window ──
-function isWithinSendingWindow(account) {
-  const now = new Date();
-  const hour = now.getHours();
+// timezone: IANA string from the user's settings (e.g. 'America/New_York')
+function isWithinSendingWindow(account, timezone = 'UTC') {
+  const hour     = getHourInTz(timezone);
   const winStart = account.send_window_start ?? 8;
   const winEnd   = account.send_window_end   ?? 17;
   return hour >= winStart && hour < winEnd;
@@ -67,38 +68,62 @@ function isWithinSendingWindow(account) {
  * Generate humanized, human-like scheduled_at timestamps for ALL sends
  * in a campaign launch.
  *
+ * All send times are computed in the USER'S timezone (IANA, e.g. 'America/New_York')
+ * and stored as UTC ISO strings in the database.  The processor just picks up
+ * whatever rows are due (scheduled_at <= now UTC) — no further timezone math needed.
+ *
  * Logic:
  *  - Contacts are batched by account's daily_limit (one batch = one calendar day)
  *  - Each batch's send times are randomly distributed within the account's
- *    working window (send_window_start → send_window_end)
- *  - Micro-noise (±30s) is added to avoid perfect clock-aligned patterns
+ *    working window (send_window_start → send_window_end) in the user's timezone
  *  - Minimum 1-minute spacing enforced between any two sends
- *  - If launched during the window, today's sends start from now+5min
- *  - If launched after window, first sends begin tomorrow
+ *  - If launched during the window, today's sends start from now+5min (local)
+ *  - If launched after window, first sends begin tomorrow (local)
  *
- * @param {Array}  contacts  - contact rows
- * @param {Array}  sequences - sequence rows (ordered by step_number)
- * @param {Object} account   - email_account row
+ * @param {Array}  contacts   - contact rows
+ * @param {Array}  sequences  - sequence rows (ordered by step_number)
+ * @param {Object} account    - email_account row
  * @param {Date}   launchTime - when the campaign was launched (default: now)
+ * @param {string} timezone   - IANA timezone of the user (default: 'UTC')
  * @returns {Array} [{contact, sequence, scheduled_at}]
  */
-function humanScheduleSends(contacts, sequences, account, launchTime = new Date()) {
-  const dailyLimit  = Math.max(1, account.daily_limit  || 50);
-  const winStart    = Number(account.send_window_start ?? 8);
-  const winEnd      = Number(account.send_window_end   ?? 17);
+function humanScheduleSends(contacts, sequences, account, launchTime = new Date(), timezone = 'UTC') {
+  const dailyLimit = Math.max(1, account.daily_limit  || 50);
+  const winStart   = Number(account.send_window_start ?? 8);
+  const winEnd     = Number(account.send_window_end   ?? 17);
 
-  // Determine effective start for day-0
-  const nowHour = launchTime.getHours();
-  const nowMin  = launchTime.getMinutes();
+  // ── Convert launch time into the user's local time ────────────────────────
+  // getTzOffsetMs = UTC_ms − local_ms  →  local_ms = UTC_ms − offsetMs
+  const launchOffsetMs  = getTzOffsetMs(timezone, launchTime);
+  const localLaunchMs   = launchTime.getTime() - launchOffsetMs;
+  // Treat this shifted value as a UTC Date so .getUTC*() gives local components
+  const localLaunchDate = new Date(localLaunchMs);
+  const localNowHour    = localLaunchDate.getUTCHours();
+  const localNowMin     = localLaunchDate.getUTCMinutes();
+
+  // Midnight of the launch date in the user's local timezone
+  const localMidnightMs = localLaunchMs
+    - localNowHour    * 3_600_000
+    - localNowMin     *    60_000
+    - localLaunchDate.getUTCSeconds()      * 1_000
+    - localLaunchDate.getUTCMilliseconds();
+
+  // ── Day-0 effective start ─────────────────────────────────────────────────
   let startDayOffset = 0;
-  let day0WinStart   = winStart; // may be adjusted if already in window
+  let day0WinStart   = winStart;
 
-  if (nowHour >= winEnd) {
-    // Already past today's window — start tomorrow
-    startDayOffset = 1;
-  } else if (nowHour >= winStart) {
-    // Inside window — start 5 minutes from now
-    day0WinStart = nowHour + (nowMin + 5) / 60;
+  if (localNowHour >= winEnd) {
+    startDayOffset = 1;                                   // past window → start tomorrow
+  } else if (localNowHour >= winStart) {
+    day0WinStart = localNowHour + (localNowMin + 5) / 60; // in window  → start +5 min
+  }
+
+  // ── Helper: local ms → UTC ISO string ────────────────────────────────────
+  // Re-computes the offset at the target time for accurate DST handling.
+  function localMsToUtcISO(localMs) {
+    const approxUtc        = new Date(localMs + launchOffsetMs); // rough UTC estimate
+    const accurateOffsetMs = getTzOffsetMs(timezone, approxUtc); // offset at that time
+    return new Date(localMs + accurateOffsetMs).toISOString();
   }
 
   const sends = [];
@@ -112,50 +137,59 @@ function humanScheduleSends(contacts, sequences, account, launchTime = new Date(
     const effectiveWinStart = (dayOffset === startDayOffset) ? day0WinStart : winStart;
     const windowMinutes     = Math.max(30, (winEnd - effectiveWinStart) * 60);
 
-    // Generate random offsets (minutes into the window) sorted ascending
+    // Random sorted offsets (minutes into the window)
     const offsets = batch.map(() => Math.random() * windowMinutes).sort((a, b) => a - b);
 
-    // Enforce minimum 1-minute spacing with extra jitter
+    // Enforce 1-minute minimum spacing
     for (let i = 1; i < offsets.length; i++) {
       if (offsets[i] - offsets[i - 1] < 1) {
         offsets[i] = offsets[i - 1] + 1 + Math.random() * 2;
       }
     }
 
+    // Midnight of this batch's day (local time, as shifted UTC ms)
+    const thisDayLocalMidnightMs = localMidnightMs + dayOffset * 86_400_000;
+
     for (let i = 0; i < batch.length; i++) {
       const contact = batch[i];
 
-      // Build the send timestamp for this contact on this day
-      const sendDate = new Date(launchTime);
-      sendDate.setDate(sendDate.getDate() + dayOffset);
-      const totalMinutes = effectiveWinStart * 60 + offsets[i];
-      sendDate.setHours(
-        Math.floor(totalMinutes / 60),
-        Math.floor(totalMinutes % 60),
-        Math.floor(Math.random() * 60), // random seconds 0-59
-        0
-      );
+      // Base send time = day midnight + window offset + random seconds
+      const totalMinutesMs  = (effectiveWinStart * 60 + offsets[i]) * 60_000;
+      const randomSecondsMs = Math.floor(Math.random() * 60) * 1_000;
+      let prevLocalMs = thisDayLocalMidnightMs + totalMinutesMs + randomSecondsMs;
 
-      // Walk through all sequence steps, each offset from the previous
-      let prevTime = new Date(sendDate);
       for (const seq of sequences) {
-        const seqTime = new Date(prevTime);
-        seqTime.setDate(seqTime.getDate() + (seq.delay_days   || 0));
-        seqTime.setHours(seqTime.getHours() + (seq.delay_hours || 0));
+        let seqLocalMs = prevLocalMs
+          + (seq.delay_days  || 0) * 86_400_000
+          + (seq.delay_hours || 0) *  3_600_000;
 
-        // For follow-up steps: snap to working window if outside
+        // Snap follow-up steps back into the working window if they drifted outside
         if (seq.step_number > 1) {
-          const h = seqTime.getHours();
+          const seqLocal = new Date(seqLocalMs);
+          const h = seqLocal.getUTCHours();
+          const dayBase = seqLocalMs
+            - h                       * 3_600_000
+            - seqLocal.getUTCMinutes() *    60_000
+            - seqLocal.getUTCSeconds() *     1_000
+            - seqLocal.getUTCMilliseconds();
+
           if (h < winStart) {
-            seqTime.setHours(winStart, Math.floor(Math.random() * 60), Math.floor(Math.random() * 60), 0);
+            // Before window → snap to winStart same day
+            seqLocalMs = dayBase
+              + winStart * 3_600_000
+              + Math.floor(Math.random() * 60) * 60_000
+              + Math.floor(Math.random() * 60) *  1_000;
           } else if (h >= winEnd) {
-            seqTime.setDate(seqTime.getDate() + 1);
-            seqTime.setHours(winStart, Math.floor(Math.random() * 60), Math.floor(Math.random() * 60), 0);
+            // After window → snap to winStart next day
+            seqLocalMs = dayBase + 86_400_000
+              + winStart * 3_600_000
+              + Math.floor(Math.random() * 60) * 60_000
+              + Math.floor(Math.random() * 60) *  1_000;
           }
         }
 
-        sends.push({ contact, sequence: seq, scheduled_at: seqTime.toISOString() });
-        prevTime = seqTime;
+        sends.push({ contact, sequence: seq, scheduled_at: localMsToUtcISO(seqLocalMs) });
+        prevLocalMs = seqLocalMs;
       }
     }
 
@@ -243,7 +277,7 @@ async function processPendingSends() {
       ea.daily_limit as acc_limit,ea.sent_today,
       ea.emails_per_hour,ea.delay_min,ea.delay_max,
       ea.send_window_start,ea.send_window_end,
-      u.can_spam_footer
+      u.can_spam_footer, u.timezone as user_timezone
     FROM sends s
     JOIN contacts c ON s.contact_id=c.id
     JOIN sequences seq ON s.sequence_id=seq.id
@@ -282,7 +316,7 @@ async function processPendingSends() {
     // Grace: if the send is more than 4h overdue we send anyway (prevents indefinite delay).
     const gracePeriodMs = 4 * 60 * 60 * 1000;
     const isOverdue     = Date.now() - new Date(send.scheduled_at).getTime() > gracePeriodMs;
-    if (!isOverdue && !isWithinSendingWindow(send)) {
+    if (!isOverdue && !isWithinSendingWindow(send, send.user_timezone || 'UTC')) {
       // Outside window — skip for now; cron will retry once window opens
       continue;
     }

@@ -482,12 +482,14 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     const contacts = await dbAll('SELECT * FROM contacts WHERE list_id=? AND unsubscribed=0 AND bounced=0 AND user_id=?', [c.list_id, req.effectiveUserId]);
     if (!contacts.length) return res.status(400).json({ error: 'No active contacts in list' });
 
-    // Fetch account for sending-window settings
+    // Fetch account settings + user timezone for humanized scheduling
     const emailAccount = await dbGet('SELECT * FROM email_accounts WHERE id=?', [c.email_account_id]);
+    const userRow      = await dbGet('SELECT timezone FROM users WHERE id=?', [req.effectiveUserId]);
+    const userTimezone = userRow?.timezone || 'UTC';
     const now = new Date();
 
-    // Generate humanized, window-aware send schedule
-    const scheduledSends = humanScheduleSends(contacts, seqs, emailAccount || {}, now);
+    // Generate humanized, window-aware send schedule (all times in user's timezone)
+    const scheduledSends = humanScheduleSends(contacts, seqs, emailAccount || {}, now, userTimezone);
 
     for (const item of scheduledSends) {
       await dbRun(

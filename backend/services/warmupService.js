@@ -19,6 +19,7 @@ const { dbAll, dbGet, dbRun } = require('../models/db');
 const { v4: uuidv4 } = require('uuid');
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
+const { getHourInTz } = require('../utils/timezone');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function randomItem(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
@@ -92,8 +93,10 @@ function pickBody() {
 }
 
 // ── Check if within warmup sending window ──────
+// account.user_timezone is joined from users table in processWarmup()
 function isWithinWarmupWindow(account) {
-  const hour     = new Date().getHours();
+  const timezone = account.user_timezone || 'UTC';
+  const hour     = getHourInTz(timezone);
   const winStart = account.warmup_window_start ?? 9;
   const winEnd   = account.warmup_window_end   ?? 17;
   return hour >= winStart && hour < winEnd;
@@ -255,7 +258,12 @@ async function processWarmup() {
       return;
     }
 
-    const accounts = await dbAll(`SELECT * FROM email_accounts WHERE warmup_enabled=1`);
+    const accounts = await dbAll(`
+      SELECT ea.*, u.timezone AS user_timezone
+      FROM email_accounts ea
+      JOIN users u ON ea.user_id = u.id
+      WHERE ea.warmup_enabled=1
+    `);
     if (accounts.length < 2) {
       console.log('⚠️ Need ≥2 warmup-enabled accounts');
       return;
