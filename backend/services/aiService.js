@@ -1,0 +1,345 @@
+/**
+ * AdoBoost AI Service
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Powered by OpenAI. All features are credit-gated (monthly allowance per plan).
+ *
+ * Plans:     trial=10  starter=100  professional=1000  unlimited=9999
+ * Features:  rewrite=1  subject_lines=1  spam_score=1  sequence=5  suggest_reply=1
+ *
+ * Set env:   OPENAI_API_KEY=sk-...
+ *            AI_MODEL_QUALITY=gpt-4o-mini  (default)
+ *            AI_MODEL_FAST=gpt-4o-mini     (default)
+ */
+
+const OpenAI  = require('openai');
+const { dbGet, dbRun } = require('../models/db');
+const { v4: uuidv4 }   = require('uuid');
+
+// ── Models (configurable via env) ───────────────────────────────────────────
+const MODEL_QUALITY = process.env.AI_MODEL_QUALITY || 'gpt-4o-mini';
+const MODEL_FAST    = process.env.AI_MODEL_FAST    || 'gpt-4o-mini';
+
+// ── Plan monthly credit allowances ──────────────────────────────────────────
+const PLAN_CREDITS = {
+  trial:        10,
+  starter:      100,
+  professional: 1000,
+  unlimited:    9999,
+};
+
+// ── Credits consumed per feature ────────────────────────────────────────────
+const FEATURE_COSTS = {
+  rewrite:       1,
+  subject_lines: 1,
+  spam_score:    1,
+  sequence:      5,
+  suggest_reply: 1,
+};
+
+// ── Lazy OpenAI client ───────────────────────────────────────────────────────
+let _openai = null;
+function getOpenAI() {
+  if (!_openai) {
+    if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set in environment');
+    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return _openai;
+}
+
+// ── Credit helpers ───────────────────────────────────────────────────────────
+async function getMonthlyUsed(userId) {
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  const row = await dbGet(
+    `SELECT COALESCE(SUM(credits_used), 0) AS total FROM ai_usage_logs
+     WHERE user_id=? AND created_at>=?`,
+    [userId, monthStart.toISOString()]
+  );
+  return Number(row?.total) || 0;
+}
+
+async function checkCredits(userId, feature) {
+  const user  = await dbGet('SELECT plan FROM users WHERE id=?', [userId]);
+  const slug  = (user?.plan || 'trial').toLowerCase();
+  const limit = PLAN_CREDITS[slug] ?? PLAN_CREDITS.trial;
+  const cost  = FEATURE_COSTS[feature] || 1;
+  const used  = await getMonthlyUsed(userId);
+
+  if (used + cost > limit) {
+    const err  = new Error(
+      `AI credits exhausted. You've used ${used} of ${limit} this month. Upgrade your plan for more.`
+    );
+    err.code   = 'NO_CREDITS';
+    err.used   = used;
+    err.limit  = limit;
+    throw err;
+  }
+  return { used, limit, cost };
+}
+
+async function logUsage(userId, feature, cost, model, inputTokens, outputTokens) {
+  await dbRun(
+    `INSERT INTO ai_usage_logs
+       (id, user_id, feature, credits_used, model, input_tokens, output_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [uuidv4(), userId, feature, cost, model, inputTokens || 0, outputTokens || 0, new Date().toISOString()]
+  );
+}
+
+// ── 1. Rewrite email ─────────────────────────────────────────────────────────
+const TONE_INSTRUCTIONS = {
+  human:        'more human and conversational — remove any corporate or robotic language',
+  shorter:      'significantly shorter (2-3 sentences max) while keeping the core message',
+  professional: 'more professional and polished while still sounding natural, not stiff',
+  softer_cta:   'with a softer, less pushy call-to-action that feels like a genuine ask',
+};
+
+async function rewriteEmail(userId, emailBody, tone = 'human') {
+  await checkCredits(userId, 'rewrite');
+  const instr = TONE_INSTRUCTIONS[tone] || TONE_INSTRUCTIONS.human;
+
+  const res = await getOpenAI().chat.completions.create({
+    model: MODEL_QUALITY,
+    max_tokens: 700,
+    temperature: 0.7,
+    messages: [
+      {
+        role: 'system',
+        content:
+`You are an expert cold email copywriter who specialises in deliverability-optimised outreach.
+
+Your rewrites must be:
+- Human and conversational (never corporate-sounding)
+- Free of spam trigger words (guaranteed, free, act now, limited offer, click here, etc.)
+- Short and punchy — respect the reader's time
+- Have a soft, natural CTA that does not feel pushy
+
+CRITICAL: Keep all Handlebars variables ({{first_name}}, {{company}}, {{title}}, etc.) exactly as-is.
+Return ONLY the rewritten email body. No explanation, no labels, no preamble.`,
+      },
+      {
+        role: 'user',
+        content: `Rewrite this cold email to be ${instr}:\n\n${emailBody}`,
+      },
+    ],
+  });
+
+  const result = res.choices[0].message.content.trim();
+  await logUsage(userId, 'rewrite', FEATURE_COSTS.rewrite, MODEL_QUALITY,
+    res.usage?.prompt_tokens, res.usage?.completion_tokens);
+  return result;
+}
+
+// ── 2. Generate subject lines ────────────────────────────────────────────────
+async function generateSubjectLines(userId, emailBody) {
+  await checkCredits(userId, 'subject_lines');
+
+  const res = await getOpenAI().chat.completions.create({
+    model: MODEL_FAST,
+    max_tokens: 450,
+    temperature: 0.85,
+    messages: [
+      {
+        role: 'system',
+        content:
+`You are an expert cold email subject line writer.
+
+Rules:
+- Sound like a real human, NOT marketing copy
+- No ALL CAPS, no excessive punctuation (!!!, ???)
+- Vary approaches: question, statement, curiosity, direct, conversational, value-based
+- Under 52 characters where possible
+- NEVER use spam words: free, guaranteed, act now, limited time, urgent, exclusive deal
+
+Return ONLY a numbered list of 10 subject lines. No preamble, no labels, no explanation.`,
+      },
+      {
+        role: 'user',
+        content: `Generate 10 natural cold email subject lines for this email:\n\n${emailBody}`,
+      },
+    ],
+  });
+
+  const raw   = res.choices[0].message.content.trim();
+  const lines = raw
+    .split('\n')
+    .filter(l => /^\d+[\.\)]/.test(l))
+    .map(l => l.replace(/^\d+[\.\)]\s*/, '').replace(/^["']|["']$/g, '').trim())
+    .filter(Boolean)
+    .slice(0, 10);
+
+  await logUsage(userId, 'subject_lines', FEATURE_COSTS.subject_lines, MODEL_FAST,
+    res.usage?.prompt_tokens, res.usage?.completion_tokens);
+  return lines;
+}
+
+// ── 3. Spam score analysis ───────────────────────────────────────────────────
+async function analyzeSpam(userId, subject, body) {
+  await checkCredits(userId, 'spam_score');
+
+  const cleanBody = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+  const res = await getOpenAI().chat.completions.create({
+    model: MODEL_FAST,
+    max_tokens: 700,
+    temperature: 0.2,
+    messages: [
+      {
+        role: 'system',
+        content:
+`You are an email deliverability expert. Analyse cold emails for spam signals.
+
+Return VALID JSON only — no markdown, no code fence, no explanation:
+{
+  "score": <0-100>,
+  "grade": <"A"|"B"|"C"|"D"|"F">,
+  "verdict": <"inbox"|"promotions"|"spam">,
+  "summary": "<one sentence>",
+  "issues": [
+    { "type": "<spam_word|aggressive_tone|formatting|excessive_links|selling_language>",
+      "text": "<exact problematic phrase>",
+      "suggestion": "<concise fix>" }
+  ]
+}
+
+Score guide: 0-20=A (clean), 21-40=B (minor), 41-60=C (needs work), 61-80=D (risky), 81-100=F (spam)`,
+      },
+      {
+        role: 'user',
+        content: `Subject: ${subject || '(none)'}\n\n${cleanBody}`,
+      },
+    ],
+  });
+
+  let result;
+  try {
+    result = JSON.parse(res.choices[0].message.content.trim());
+  } catch {
+    result = { score: 0, grade: 'A', verdict: 'inbox', summary: 'Looks clean.', issues: [] };
+  }
+
+  await logUsage(userId, 'spam_score', FEATURE_COSTS.spam_score, MODEL_FAST,
+    res.usage?.prompt_tokens, res.usage?.completion_tokens);
+  return result;
+}
+
+// ── 4. Generate full sequence ────────────────────────────────────────────────
+async function generateSequence(userId, audience, offer, niche) {
+  await checkCredits(userId, 'sequence');
+
+  const res = await getOpenAI().chat.completions.create({
+    model: MODEL_QUALITY,
+    max_tokens: 1400,
+    temperature: 0.75,
+    messages: [
+      {
+        role: 'system',
+        content:
+`You are an expert B2B cold email copywriter. Generate complete 3-step cold email sequences.
+
+Rules:
+- Every email: 3-5 sentences max, human conversational tone, zero spam words
+- Use {{first_name}} and {{company}} naturally where they'd fit
+- Step 1 (day 0): personal intro + specific value prop + a soft single CTA
+- Step 2 (day 3): different angle — add an insight, stat, or social proof; lighter CTA
+- Step 3 (day 7): graceful breakup email — give them an easy out, stay positive
+
+Return VALID JSON array only — no markdown, no code fence, no extra text:
+[
+  {"step":1,"subject":"...","body":"...","delay_days":0,"delay_hours":0},
+  {"step":2,"subject":"...","body":"...","delay_days":3,"delay_hours":0},
+  {"step":3,"subject":"...","body":"...","delay_days":7,"delay_hours":0}
+]`,
+      },
+      {
+        role: 'user',
+        content: `Generate a 3-step cold email sequence:\n- Target audience: ${audience}\n- Offer / product: ${offer}\n- Niche / industry: ${niche}`,
+      },
+    ],
+  });
+
+  let sequences = [];
+  try {
+    const raw = res.choices[0].message.content.trim();
+    sequences  = JSON.parse(raw);
+    if (!Array.isArray(sequences)) sequences = [];
+  } catch { sequences = []; }
+
+  await logUsage(userId, 'sequence', FEATURE_COSTS.sequence, MODEL_QUALITY,
+    res.usage?.prompt_tokens, res.usage?.completion_tokens);
+  return sequences;
+}
+
+// ── 5. Suggest replies ───────────────────────────────────────────────────────
+async function suggestReplies(userId, threadContext) {
+  await checkCredits(userId, 'suggest_reply');
+
+  const res = await getOpenAI().chat.completions.create({
+    model: MODEL_QUALITY,
+    max_tokens: 550,
+    temperature: 0.7,
+    messages: [
+      {
+        role: 'system',
+        content:
+`You help B2B salespeople respond naturally to cold email replies.
+
+Return VALID JSON array only — no markdown, no code fence:
+[
+  {"tone":"warm",         "label":"Enthusiastic", "text":"..."},
+  {"tone":"professional", "label":"Professional",  "text":"..."},
+  {"tone":"brief",        "label":"Short & casual","text":"..."}
+]
+
+Each reply: 1-3 sentences, sound like a real human, no corporate-speak.`,
+      },
+      {
+        role: 'user',
+        content: `Email thread:\n${threadContext}\n\nSuggest 3 reply options.`,
+      },
+    ],
+  });
+
+  let replies = [];
+  try {
+    replies = JSON.parse(res.choices[0].message.content.trim());
+  } catch { replies = []; }
+
+  await logUsage(userId, 'suggest_reply', FEATURE_COSTS.suggest_reply, MODEL_QUALITY,
+    res.usage?.prompt_tokens, res.usage?.completion_tokens);
+  return replies;
+}
+
+// ── Credits status (for frontend display) ───────────────────────────────────
+async function getCreditsStatus(userId) {
+  const user  = await dbGet('SELECT plan FROM users WHERE id=?', [userId]);
+  const slug  = (user?.plan || 'trial').toLowerCase();
+  const limit = PLAN_CREDITS[slug] ?? PLAN_CREDITS.trial;
+  const used  = await getMonthlyUsed(userId);
+
+  const nextMonth = new Date();
+  nextMonth.setMonth(nextMonth.getMonth() + 1);
+  nextMonth.setDate(1);
+  nextMonth.setHours(0, 0, 0, 0);
+
+  return {
+    used,
+    limit,
+    remaining: Math.max(0, limit - used),
+    plan: slug,
+    resets_at: nextMonth.toISOString(),
+    feature_costs: FEATURE_COSTS,
+  };
+}
+
+module.exports = {
+  rewriteEmail,
+  generateSubjectLines,
+  analyzeSpam,
+  generateSequence,
+  suggestReplies,
+  getCreditsStatus,
+  PLAN_CREDITS,
+  FEATURE_COSTS,
+};

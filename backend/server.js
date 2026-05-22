@@ -52,6 +52,7 @@ app.use('/api',                vaUpsellRouter);
 app.use('/api/auth',           require('./routes/authSystem'));  // forgot/reset password
 app.use('/api/usage',          usageRouter);
 app.use('/api/internal',       internalRouter);
+app.use('/api/ai',             require('./routes/ai'));
 
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',

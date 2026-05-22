@@ -184,6 +184,18 @@ function initSchema() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (account_id) REFERENCES email_accounts(id))`);
 
+    // AI usage logs
+    db.run(`CREATE TABLE IF NOT EXISTS ai_usage_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      feature TEXT NOT NULL,
+      credits_used INTEGER DEFAULT 1,
+      model TEXT,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id))`);
+
     // Password reset tokens
     db.run(`CREATE TABLE IF NOT EXISTS reset_tokens (
       id TEXT PRIMARY KEY,
