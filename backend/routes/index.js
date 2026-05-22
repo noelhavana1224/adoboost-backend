@@ -5,6 +5,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { dbGet, dbAll, dbRun } = require('../models/db');
 const { authMiddleware, adminMiddleware, JWT_SECRET } = require('../middleware/auth');
+const { humanScheduleSends } = require('../services/emailService');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -480,22 +481,29 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
 
     const contacts = await dbAll('SELECT * FROM contacts WHERE list_id=? AND unsubscribed=0 AND bounced=0 AND user_id=?', [c.list_id, req.effectiveUserId]);
     if (!contacts.length) return res.status(400).json({ error: 'No active contacts in list' });
+
+    // Fetch account for sending-window settings
+    const emailAccount = await dbGet('SELECT * FROM email_accounts WHERE id=?', [c.email_account_id]);
     const now = new Date();
-    let count = 0;
-    for (const contact of contacts) {
-      let base = new Date(now);
-      for (const seq of seqs) {
-        const sched = new Date(base);
-        sched.setDate(sched.getDate()+(seq.delay_days||0));
-        sched.setHours(sched.getHours()+(seq.delay_hours||0));
-        await dbRun('INSERT INTO sends (id,campaign_id,sequence_id,contact_id,email_account_id,status,scheduled_at) VALUES (?,?,?,?,?,?,?)',
-          [uuidv4(), c.id, seq.id, contact.id, c.email_account_id, 'pending', sched.toISOString()]);
-        base = new Date(sched);
-        count++;
-      }
+
+    // Generate humanized, window-aware send schedule
+    const scheduledSends = humanScheduleSends(contacts, seqs, emailAccount || {}, now);
+
+    for (const item of scheduledSends) {
+      await dbRun(
+        'INSERT INTO sends (id,campaign_id,sequence_id,contact_id,email_account_id,status,scheduled_at) VALUES (?,?,?,?,?,?,?)',
+        [uuidv4(), c.id, item.sequence.id, item.contact.id, c.email_account_id, 'pending', item.scheduled_at]
+      );
     }
+    const count = scheduledSends.length;
+
+    // Preview: show first-day count and first/last send times
+    const firstSend = scheduledSends[0]?.scheduled_at;
+    const lastSend  = scheduledSends[scheduledSends.length - 1]?.scheduled_at;
+    console.log(`🚀 Campaign ${c.id}: ${count} sends scheduled | first=${firstSend} | last=${lastSend}`);
+
     await dbRun(`UPDATE campaigns SET status='active', started_at=? WHERE id=?`, [now.toISOString(), c.id]);
-    res.json({ success: true, scheduled: count });
+    res.json({ success: true, scheduled: count, first_send: firstSend, last_send: lastSend });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

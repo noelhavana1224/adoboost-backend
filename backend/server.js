@@ -78,8 +78,10 @@ cron.schedule('*/5 * * * *', async () => {
   catch (e) { console.error('IMAP sync error:', e.message); }
 });
 
-// ── Cron: run warmup network once daily at 9am ─────────────────────────────
-cron.schedule('0 9 * * *', async () => {
+// ── Cron: warmup pulse every 30 min ───────────────────────────────────────
+// Sends ONE email per eligible account per run with 70% probability,
+// creating a humanized non-robotic warmup pattern throughout the day.
+cron.schedule('*/30 * * * *', async () => {
   try { await processWarmup(); }
   catch (e) { console.error('Warmup error:', e.message); }
 });

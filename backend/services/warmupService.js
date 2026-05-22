@@ -1,16 +1,35 @@
-  const nodemailer = require('nodemailer');
+/**
+ * Humanized Warmup Engine
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Runs every 30 minutes (changed in server.js).
+ * Each run:
+ *   1. Finds accounts that still need warmup emails today
+ *   2. For each eligible account, there is a 70% chance an email is sent
+ *      this run (30% random skip → non-robotic pattern)
+ *   3. Only one email per account per run — spread throughout the day
+ *   4. Checks warmup window (warmup_window_start → warmup_window_end)
+ *   5. Auto-replies to received warmup emails via IMAP (natural conversation)
+ *
+ * Result: warmup emails land at unpredictable intervals throughout the day,
+ * completely indistinguishable from a human manually sending them.
+ */
+
+const nodemailer = require('nodemailer');
 const { dbAll, dbGet, dbRun } = require('../models/db');
 const { v4: uuidv4 } = require('uuid');
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
 
-// ── Warmup email subjects & bodies (natural sounding) ──
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function randomItem(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+// ── Humanized warmup email content ──────────────
+// Multiple categories for realistic variety
 const WARMUP_SUBJECTS = [
   'Quick question for you',
   'Following up on something',
   'Thoughts on this?',
   'Checking in',
-  'Have you seen this?',
   'Quick note',
   'Wanted to share something',
   'A few thoughts',
@@ -21,101 +40,125 @@ const WARMUP_SUBJECTS = [
   'Been thinking about this',
   'Catching up',
   'A quick hello',
+  'Touching base',
+  'Any thoughts on this?',
+  'Worth discussing',
+  'Quick heads-up',
+  'A small update',
+  'Staying connected',
 ];
 
-const WARMUP_BODIES = [
-  `Hi there,\n\nI hope this message finds you well. I wanted to reach out and connect briefly. It's always great to stay in touch with colleagues in the industry.\n\nLooking forward to hearing from you!\n\nBest regards`,
-  `Hello,\n\nJust wanted to drop you a quick note. I've been thinking about some ideas lately and would love to get your perspective when you have a moment.\n\nThanks for your time!`,
-  `Hi,\n\nHope you're having a great week! I wanted to touch base and see how things are going on your end. Always good to stay connected.\n\nTalk soon!`,
+// Short variants (2-4 lines) — look like real quick emails
+const WARMUP_BODIES_SHORT = [
+  `Hi,\n\nJust wanted to touch base briefly. Hope things are going well on your end.\n\nTalk soon!`,
+  `Hello,\n\nHope you're having a good week! Just checking in.\n\nBest`,
+  `Hey,\n\nQuick note — hope all is well. Let's stay in touch.\n\nCheers`,
+  `Hi,\n\nJust a quick hello. Hope everything's going smoothly.\n\nTake care!`,
+  `Hello,\n\nHoped to catch you for a moment. Nothing urgent — just wanted to connect.\n\nBest regards`,
+];
+
+// Medium variants (4-6 lines) — slightly more substance
+const WARMUP_BODIES_MEDIUM = [
+  `Hi,\n\nI hope this message finds you well. I wanted to reach out and connect briefly. It's always great to stay in touch with colleagues in the industry.\n\nLooking forward to hearing from you!\n\nBest regards`,
+  `Hello,\n\nJust wanted to drop you a quick note. I've been thinking about a few things lately and would love to get your perspective when you have a moment.\n\nThanks for your time!`,
   `Good morning,\n\nI came across something interesting recently and immediately thought of you. Would love to share more details when you're free.\n\nBest wishes`,
-  `Hello there,\n\nJust a quick note to say I appreciate our connection. It's important to stay in touch with great people in the network.\n\nHope to chat soon!`,
-  `Hi,\n\nThought I'd reach out today. Been a while since we last connected and I wanted to check in to see how everything is going.\n\nWarm regards`,
-  `Hey,\n\nHope all is well! I had a few thoughts I wanted to share with you. Nothing urgent, just wanted to keep the conversation going.\n\nTake care!`,
-  `Hello,\n\nI wanted to reach out and say that it's always great connecting with professionals in our space. Looking forward to future conversations.\n\nBest`,
+  `Hi,\n\nThought I'd reach out today. It's been a while since we last connected and I wanted to check in to see how everything is going.\n\nWarm regards`,
+  `Hello,\n\nHope all is well! I had a few thoughts I wanted to share with you. Nothing urgent — just wanted to keep the conversation going.\n\nTake care!`,
+];
+
+// Long variants (6+ lines) — used occasionally for realism
+const WARMUP_BODIES_LONG = [
+  `Hi there,\n\nI hope this message finds you well. I was thinking about reaching out for a while now — it's always great to stay connected with professionals in the space.\n\nI've been exploring a few new ideas lately and thought they might be worth discussing. No rush at all, just wanted to plant a seed for a future conversation.\n\nLet me know if you'd be open to connecting!\n\nBest regards`,
+  `Hello,\n\nHope things are going well on your end. I've been meaning to reach out for a bit.\n\nI have a few thoughts on some industry developments I'd love to get your take on when you have some bandwidth. It's nothing time-sensitive, just something worth a quick chat about when the timing is right.\n\nLooking forward to hearing from you.\n\nWarm regards`,
 ];
 
 const WARMUP_REPLIES = [
   `Thanks for reaching out! Great to hear from you. I'll be in touch soon.`,
   `Hi! Thanks for the message. Really appreciate you taking the time to connect.`,
-  `Hello! Thanks for reaching out. Always great to stay connected. Will follow up shortly.`,
   `Thanks for the note! Great to hear from you. Looking forward to staying in touch.`,
-  `Hi there! Appreciate the message. Will definitely get back to you with more details soon.`,
+  `Hi there! Appreciate the message. Will definitely follow up with more details soon.`,
   `Thanks for reaching out! This is great timing. Let's definitely stay in touch.`,
   `Hello! Thanks so much for connecting. Really appreciate it. Talk soon!`,
-  `Hi! Great to hear from you. Thanks for the message. Will respond in more detail shortly.`,
+  `Hi! Great to hear from you. Will respond in more detail shortly.`,
+  `Thanks for the hello! Always great to connect. Speak soon.`,
 ];
 
-function randomItem(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
+// ── Pick a body with realistic length distribution ──
+function pickBody() {
+  const r = Math.random();
+  if (r < 0.35)      return randomItem(WARMUP_BODIES_SHORT);   // 35% short
+  else if (r < 0.80) return randomItem(WARMUP_BODIES_MEDIUM);  // 45% medium
+  else               return randomItem(WARMUP_BODIES_LONG);     // 20% long
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+// ── Check if within warmup sending window ──────
+function isWithinWarmupWindow(account) {
+  const hour     = new Date().getHours();
+  const winStart = account.warmup_window_start ?? 9;
+  const winEnd   = account.warmup_window_end   ?? 17;
+  return hour >= winStart && hour < winEnd;
 }
 
-// ── Get today's warmup target for an account ────
+// ── Get today's target for an account ──────────
 function getDailyTarget(account) {
-  const startCount  = account.warmup_start_count  || 2;
-  const increment   = account.warmup_increment    || 2;
-  const maxCount    = account.warmup_max_count    || 40;
-  const warmupDays  = account.warmup_days         || 0;
-  const target = Math.min(startCount + (increment * warmupDays), maxCount);
-  return target;
+  const startCount = account.warmup_start_count || 2;
+  const increment  = account.warmup_increment   || 2;
+  const maxCount   = account.warmup_max_count   || 40;
+  const warmupDays = account.warmup_days        || 0;
+  return Math.min(startCount + increment * warmupDays, maxCount);
 }
 
-// ── Send one warmup email ────────────────────────
+// ── Send one warmup email ───────────────────────
 async function sendWarmupEmail(fromAccount, toAccount) {
   try {
     const transporter = nodemailer.createTransport({
-      host: fromAccount.host,
-      port: fromAccount.port,
+      host:   fromAccount.host,
+      port:   fromAccount.port,
       secure: fromAccount.secure === 1 || fromAccount.port === 465,
-      auth: { user: fromAccount.username, pass: fromAccount.password },
-      tls: { rejectUnauthorized: false },
+      auth:   { user: fromAccount.username, pass: fromAccount.password },
+      tls:    { rejectUnauthorized: false },
     });
 
     const subject = randomItem(WARMUP_SUBJECTS);
-    const body    = randomItem(WARMUP_BODIES);
+    const body    = pickBody();
     const msgId   = uuidv4();
 
     await transporter.sendMail({
-      from: `"${fromAccount.from_name}" <${fromAccount.from_email}>`,
-      to:   toAccount.from_email,
+      from:    `"${fromAccount.from_name}" <${fromAccount.from_email}>`,
+      to:      toAccount.from_email,
       subject,
-      text: body,
-      html: body.replace(/\n/g, '<br>'),
+      text:    body,
+      html:    body.replace(/\n/g, '<br>'),
       headers: { 'X-Warmup-Email': 'true', 'X-Warmup-Id': msgId },
     });
 
-    // Log the warmup send
     await dbRun(`
-      INSERT INTO warmup_logs (id, account_id, direction, partner_email, subject, status, created_at)
-      VALUES (?, ?, 'sent', ?, ?, 'sent', ?)
+      INSERT INTO warmup_logs (id,account_id,direction,partner_email,subject,status,created_at)
+      VALUES (?,?,'sent',?,?,'sent',?)
     `, [uuidv4(), fromAccount.id, toAccount.from_email, subject, new Date().toISOString()]);
 
-    return { success: true, msgId, subject };
+    return { success: true };
   } catch (e) {
     console.error(`Warmup send error ${fromAccount.from_email} → ${toAccount.from_email}:`, e.message);
     await dbRun(`
-      INSERT INTO warmup_logs (id, account_id, direction, partner_email, subject, status, error, created_at)
-      VALUES (?, ?, 'sent', ?, ?, 'failed', ?, ?)
-    `, [uuidv4(), fromAccount.id, toAccount.from_email, 'Warmup email', 'failed', e.message, new Date().toISOString()]);
-    return { success: false, error: e.message };
+      INSERT INTO warmup_logs (id,account_id,direction,partner_email,subject,status,error,created_at)
+      VALUES (?,?,'sent',?,'Warmup email','failed',?,?)
+    `, [uuidv4(), fromAccount.id, toAccount.from_email, e.message, new Date().toISOString()]);
+    return { success: false };
   }
 }
 
-// ── Auto-reply to warmup emails via IMAP ─────────
+// ── Auto-reply to received warmup emails (IMAP) ─
 async function autoReplyWarmupEmails(account) {
   if (!account.imap_host) return { replied: 0 };
-
   try {
     const imap = new Imap({
-      user: account.username,
-      password: account.password,
-      host: account.imap_host,
-      port: account.imap_port || 993,
-      tls: account.imap_secure === 1 || account.imap_port === 993,
-      tlsOptions: { rejectUnauthorized: false },
+      user:        account.username,
+      password:    account.password,
+      host:        account.imap_host,
+      port:        account.imap_port || 993,
+      tls:         account.imap_secure === 1 || account.imap_port === 993,
+      tlsOptions:  { rejectUnauthorized: false },
       connTimeout: 15000,
       authTimeout: 10000,
     });
@@ -125,7 +168,6 @@ async function autoReplyWarmupEmails(account) {
         try {
           await new Promise((res, rej) => imap.openBox('INBOX', false, err => err ? rej(err) : res()));
 
-          // Search for warmup emails from last 2 days
           const since = new Date();
           since.setDate(since.getDate() - 2);
           const sinceStr = since.toISOString().split('T')[0];
@@ -140,61 +182,53 @@ async function autoReplyWarmupEmails(account) {
 
           const fetch = imap.fetch(uids, { bodies: '', markSeen: true });
           const emails = [];
-
           fetch.on('message', msg => {
             let buffer = '';
-            msg.on('body', stream => {
-              stream.on('data', chunk => buffer += chunk.toString('utf8'));
-              stream.once('end', () => emails.push(buffer));
-            });
+            msg.on('body', stream => { stream.on('data', chunk => buffer += chunk.toString('utf8')); stream.once('end', () => emails.push(buffer)); });
           });
-
           await new Promise(res => fetch.once('end', res));
 
           let replied = 0;
           for (const raw of emails) {
             try {
-              const parsed = await simpleParser(raw);
-              const fromEmail = parsed.from?.value?.[0]?.address?.toLowerCase();
+              const parsed     = await simpleParser(raw);
+              const fromEmail  = parsed.from?.value?.[0]?.address?.toLowerCase();
               if (!fromEmail) continue;
 
-              // Only auto-reply to warmup emails from other AdoBoost accounts
-              const partnerAccount = await dbGet(
+              const partner = await dbGet(
                 `SELECT * FROM email_accounts WHERE LOWER(from_email)=? AND warmup_enabled=1`,
                 [fromEmail]
               );
-              if (!partnerAccount) continue;
+              if (!partner) continue;
 
-              // Send auto-reply
+              // Small random delay before replying (5-25s) — human pacing
+              await sleep(5000 + Math.floor(Math.random() * 20000));
+
               const transporter = nodemailer.createTransport({
                 host: account.host, port: account.port,
                 secure: account.secure === 1 || account.port === 465,
-                auth: { user: account.username, pass: account.password },
-                tls: { rejectUnauthorized: false },
+                auth:   { user: account.username, pass: account.password },
+                tls:    { rejectUnauthorized: false },
               });
 
               const replyText = randomItem(WARMUP_REPLIES);
               await transporter.sendMail({
-                from: `"${account.from_name}" <${account.from_email}>`,
-                to:   fromEmail,
+                from:    `"${account.from_name}" <${account.from_email}>`,
+                to:      fromEmail,
                 subject: `Re: ${parsed.subject || 'Warmup'}`,
-                text:  replyText,
-                html:  replyText.replace(/\n/g, '<br>'),
+                text:    replyText,
+                html:    replyText.replace(/\n/g, '<br>'),
                 headers: { 'X-Warmup-Email': 'true' },
               });
 
               await dbRun(`
-                INSERT INTO warmup_logs (id, account_id, direction, partner_email, subject, status, created_at)
-                VALUES (?, ?, 'replied', ?, ?, 'sent', ?)
+                INSERT INTO warmup_logs (id,account_id,direction,partner_email,subject,status,created_at)
+                VALUES (?,?,'replied',?,?,'sent',?)
               `, [uuidv4(), account.id, fromEmail, `Re: ${parsed.subject}`, new Date().toISOString()]);
 
               replied++;
-              await sleep(3000); // Small delay between replies
-            } catch (e) {
-              console.error('Auto-reply error:', e.message);
-            }
+            } catch (e) { console.error('Auto-reply error:', e.message); }
           }
-
           imap.end();
           resolve({ replied });
         } catch (e) { imap.end(); reject(e); }
@@ -208,89 +242,103 @@ async function autoReplyWarmupEmails(account) {
   }
 }
 
-// ── Main warmup processor ────────────────────────
+// ── Main warmup processor (called every 30 min) ─────────────────────────────
+// KEY DESIGN: sends ONE email per eligible account per run with 70% probability.
+// This naturally spreads warmup emails throughout the day in a completely
+// unpredictable human-like pattern.
 async function processWarmup() {
   try {
-    // ── Skip weekends — warmup only runs Mon–Fri ──
-    const dayOfWeek = new Date().getDay(); // 0=Sun, 6=Sat
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
-      console.log('📅 Warmup skipped — weekend (Saturday/Sunday). Resumes Monday.');
+    // Skip weekends
+    const dow = new Date().getDay();
+    if (dow === 0 || dow === 6) {
+      console.log('📅 Warmup skipped — weekend.');
       return;
     }
 
-    // Get all warmup-enabled accounts
-    const accounts = await dbAll(`
-      SELECT * FROM email_accounts WHERE warmup_enabled=1
-    `);
-
+    const accounts = await dbAll(`SELECT * FROM email_accounts WHERE warmup_enabled=1`);
     if (accounts.length < 2) {
-      console.log('⚠️ Need at least 2 warmup-enabled accounts to run warmup network');
+      console.log('⚠️ Need ≥2 warmup-enabled accounts');
       return;
     }
 
-    console.log(`🌡️ Running warmup for ${accounts.length} accounts (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dayOfWeek]})...`);
+    const today = new Date().toISOString().split('T')[0];
+    console.log(`🌡️ Warmup pulse — ${accounts.length} accounts, ${new Date().toLocaleTimeString()}`);
 
     for (const account of accounts) {
       try {
+        // ── Window check ──
+        if (!isWithinWarmupWindow(account)) {
+          continue; // Outside warmup window for this account
+        }
+
         const target = getDailyTarget(account);
 
-        // Check how many warmup emails sent today
-        const today = new Date().toISOString().split('T')[0];
-        const sentToday = await dbGet(`
+        // Count already sent today
+        const sentRow = await dbGet(`
           SELECT COUNT(*) as c FROM warmup_logs
-          WHERE account_id=? AND direction='sent' AND status='sent'
-          AND DATE(created_at)=?
+          WHERE account_id=? AND direction='sent' AND status='sent' AND DATE(created_at)=?
         `, [account.id, today]);
+        const alreadySent = sentRow?.c || 0;
 
-        const alreadySent = sentToday?.c || 0;
-        const toSend = Math.max(0, target - alreadySent);
-
-        if (toSend === 0) {
-          console.log(`✅ ${account.from_email}: daily target ${target} already reached`);
+        if (alreadySent >= target) {
+          // Daily target reached — try auto-replies instead
+          const { replied } = await autoReplyWarmupEmails(account);
+          if (replied > 0) console.log(`↩️ Auto-replied ${replied}x for ${account.from_email}`);
           continue;
         }
 
-        // Pick random partner accounts (not self, not same user)
-        const partners = accounts.filter(a =>
-          a.id !== account.id &&
-          a.from_email !== account.from_email
-        );
+        // ── Stochastic skip: 30% chance of NOT sending this run ──
+        // This creates natural randomness — on a 30-min cron with 70% hit rate,
+        // emails arrive at statistically unpredictable intervals.
+        if (Math.random() < 0.30) {
+          console.log(`⏭ Warmup skip (random) for ${account.from_email} — will retry next run`);
+          continue;
+        }
 
+        // ── Pick a random partner account ──
+        const partners = accounts.filter(a =>
+          a.id !== account.id && a.from_email !== account.from_email
+        );
         if (!partners.length) continue;
 
-        let sent = 0;
-        for (let i = 0; i < toSend; i++) {
-          // Rotate through partners (repeats if toSend > pool size)
-          const partner = partners[i % partners.length];
-          const result = await sendWarmupEmail(account, partner);
-          if (result.success) {
-            sent++;
-            console.log(`✅ Warmup: ${account.from_email} → ${partner.from_email}`);
-            // Random delay 30-90s between warmup sends
-            await sleep(Math.floor(Math.random() * 60000) + 30000);
+        // Prefer partners we haven't sent to recently (last 2 days)
+        const recentRows = await dbAll(`
+          SELECT partner_email FROM warmup_logs
+          WHERE account_id=? AND direction='sent' AND DATE(created_at)>=DATE('now','-2 days')
+        `, [account.id]);
+        const recentSet = new Set(recentRows.map(r => r.partner_email));
+        const freshPartners = partners.filter(p => !recentSet.has(p.from_email));
+        const partner = randomItem(freshPartners.length ? freshPartners : partners);
+
+        const result = await sendWarmupEmail(account, partner);
+        if (result.success) {
+          console.log(`✅ Warmup: ${account.from_email} → ${partner.from_email} (${alreadySent + 1}/${target} today)`);
+
+          // Update warmup days counter (once per day)
+          const lastWarmupDate = account.last_warmup_at
+            ? new Date(account.last_warmup_at).toISOString().split('T')[0]
+            : null;
+          if (lastWarmupDate !== today) {
+            await dbRun(`
+              UPDATE email_accounts SET warmup_days=warmup_days+1, last_warmup_at=? WHERE id=?
+            `, [new Date().toISOString(), account.id]);
           }
+
+          // Update health score
+          const replyRate = await getReplyRate(account.id);
+          const health = Math.min(100, Math.round(
+            (Math.min(account.warmup_days || 0, 30) / 30) * 50 +
+            replyRate * 50
+          ));
+          await dbRun(`UPDATE email_accounts SET warmup_health=? WHERE id=?`, [health, account.id]);
         }
 
-        // Auto-reply to received warmup emails
+        // Check for incoming warmup emails to reply to (opportunistic)
         const { replied } = await autoReplyWarmupEmails(account);
-        if (replied > 0) console.log(`↩️ Auto-replied to ${replied} warmup emails for ${account.from_email}`);
+        if (replied > 0) console.log(`↩️ Auto-replied ${replied}x for ${account.from_email}`);
 
-        // Update warmup days counter
-        const lastWarmup = account.last_warmup_at;
-        const lastDate   = lastWarmup ? new Date(lastWarmup).toISOString().split('T')[0] : null;
-        if (lastDate !== today && sent > 0) {
-          await dbRun(`
-            UPDATE email_accounts SET warmup_days=warmup_days+1, last_warmup_at=? WHERE id=?
-          `, [new Date().toISOString(), account.id]);
-        }
-
-        // Update warmup health score
-        const replyRate = await getReplyRate(account.id);
-        const health = Math.min(100, Math.round(
-          (Math.min(account.warmup_days || 0, 30) / 30) * 50 + // 50pts for days completed
-          replyRate * 50  // 50pts for reply rate
-        ));
-        await dbRun(`UPDATE email_accounts SET warmup_health=? WHERE id=?`, [health, account.id]);
+        // Brief inter-account pause (2-8s) to avoid simultaneous SMTP connections
+        await sleep(2000 + Math.floor(Math.random() * 6000));
 
       } catch (e) {
         console.error(`Warmup error for ${account.from_email}:`, e.message);
@@ -304,7 +352,7 @@ async function processWarmup() {
 // ── Get reply rate for health score ─────────────
 async function getReplyRate(accountId) {
   try {
-    const sent = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='sent'`, [accountId]);
+    const sent    = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent'   AND status='sent'`, [accountId]);
     const replied = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='replied' AND status='sent'`, [accountId]);
     if (!sent?.c) return 0;
     return Math.min(1, (replied?.c || 0) / (sent?.c || 1));

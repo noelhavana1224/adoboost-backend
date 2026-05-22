@@ -281,6 +281,12 @@ function runMigrations() {
     `ALTER TABLE team_members ADD COLUMN must_change_password INTEGER DEFAULT 0`,
     // ── Message archive ──
     `ALTER TABLE messages ADD COLUMN archived INTEGER DEFAULT 0`,
+    // ── Human-like sending schedule columns ──
+    `ALTER TABLE email_accounts ADD COLUMN send_window_start INTEGER DEFAULT 8`,
+    `ALTER TABLE email_accounts ADD COLUMN send_window_end INTEGER DEFAULT 17`,
+    `ALTER TABLE email_accounts ADD COLUMN sending_preset TEXT DEFAULT 'moderate'`,
+    `ALTER TABLE email_accounts ADD COLUMN warmup_window_start INTEGER DEFAULT 9`,
+    `ALTER TABLE email_accounts ADD COLUMN warmup_window_end INTEGER DEFAULT 17`,
   ];
 
   for (const sql of migrations) {

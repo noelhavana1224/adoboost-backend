@@ -5,16 +5,164 @@ const { v4: uuidv4 } = require('uuid');
 
 const BASE_URL = () => process.env.BASE_URL || 'https://api.adobosolutions.com';
 
-// ── Random delay helper ──────────────────────────
+// ── Helpers ──────────────────────────────────────
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function randomDelay(minSec, maxSec) {
-  const min = Math.max(10, Number(minSec) || 45);
-  const max = Math.max(min + 5, Number(maxSec) || 120);
-  const ms = (Math.floor(Math.random() * (max - min + 1)) + min) * 1000;
-  return ms;
+// ── Sending presets ──────────────────────────────
+const SENDING_PRESETS = {
+  safe: {
+    label: 'Safe',
+    daily_limit: 15,
+    emails_per_hour: 3,
+    delay_min: 120,
+    delay_max: 300,
+    send_window_start: 9,
+    send_window_end: 17,
+    description: 'Best for new domains. Slow & safe.',
+  },
+  moderate: {
+    label: 'Moderate',
+    daily_limit: 40,
+    emails_per_hour: 6,
+    delay_min: 60,
+    delay_max: 180,
+    send_window_start: 8,
+    send_window_end: 18,
+    description: 'Balanced for warmed-up domains.',
+  },
+  aggressive: {
+    label: 'Aggressive',
+    daily_limit: 100,
+    emails_per_hour: 15,
+    delay_min: 25,
+    delay_max: 75,
+    send_window_start: 7,
+    send_window_end: 20,
+    description: 'High volume. Only for established domains.',
+  },
+  auto_warmer: {
+    label: 'Auto Warmer',
+    daily_limit: 10,
+    emails_per_hour: 2,
+    delay_min: 180,
+    delay_max: 420,
+    send_window_start: 9,
+    send_window_end: 17,
+    description: 'Warmup-optimised. Slow ramp-up.',
+  },
+};
+
+// ── Check if current time is inside account's sending window ──
+function isWithinSendingWindow(account) {
+  const now = new Date();
+  const hour = now.getHours();
+  const winStart = account.send_window_start ?? 8;
+  const winEnd   = account.send_window_end   ?? 17;
+  return hour >= winStart && hour < winEnd;
+}
+
+/**
+ * Generate humanized, human-like scheduled_at timestamps for ALL sends
+ * in a campaign launch.
+ *
+ * Logic:
+ *  - Contacts are batched by account's daily_limit (one batch = one calendar day)
+ *  - Each batch's send times are randomly distributed within the account's
+ *    working window (send_window_start → send_window_end)
+ *  - Micro-noise (±30s) is added to avoid perfect clock-aligned patterns
+ *  - Minimum 1-minute spacing enforced between any two sends
+ *  - If launched during the window, today's sends start from now+5min
+ *  - If launched after window, first sends begin tomorrow
+ *
+ * @param {Array}  contacts  - contact rows
+ * @param {Array}  sequences - sequence rows (ordered by step_number)
+ * @param {Object} account   - email_account row
+ * @param {Date}   launchTime - when the campaign was launched (default: now)
+ * @returns {Array} [{contact, sequence, scheduled_at}]
+ */
+function humanScheduleSends(contacts, sequences, account, launchTime = new Date()) {
+  const dailyLimit  = Math.max(1, account.daily_limit  || 50);
+  const winStart    = Number(account.send_window_start ?? 8);
+  const winEnd      = Number(account.send_window_end   ?? 17);
+
+  // Determine effective start for day-0
+  const nowHour = launchTime.getHours();
+  const nowMin  = launchTime.getMinutes();
+  let startDayOffset = 0;
+  let day0WinStart   = winStart; // may be adjusted if already in window
+
+  if (nowHour >= winEnd) {
+    // Already past today's window — start tomorrow
+    startDayOffset = 1;
+  } else if (nowHour >= winStart) {
+    // Inside window — start 5 minutes from now
+    day0WinStart = nowHour + (nowMin + 5) / 60;
+  }
+
+  const sends = [];
+  let contactIdx = 0;
+  let dayOffset  = startDayOffset;
+
+  while (contactIdx < contacts.length) {
+    const batch = contacts.slice(contactIdx, contactIdx + dailyLimit);
+    contactIdx += dailyLimit;
+
+    const effectiveWinStart = (dayOffset === startDayOffset) ? day0WinStart : winStart;
+    const windowMinutes     = Math.max(30, (winEnd - effectiveWinStart) * 60);
+
+    // Generate random offsets (minutes into the window) sorted ascending
+    const offsets = batch.map(() => Math.random() * windowMinutes).sort((a, b) => a - b);
+
+    // Enforce minimum 1-minute spacing with extra jitter
+    for (let i = 1; i < offsets.length; i++) {
+      if (offsets[i] - offsets[i - 1] < 1) {
+        offsets[i] = offsets[i - 1] + 1 + Math.random() * 2;
+      }
+    }
+
+    for (let i = 0; i < batch.length; i++) {
+      const contact = batch[i];
+
+      // Build the send timestamp for this contact on this day
+      const sendDate = new Date(launchTime);
+      sendDate.setDate(sendDate.getDate() + dayOffset);
+      const totalMinutes = effectiveWinStart * 60 + offsets[i];
+      sendDate.setHours(
+        Math.floor(totalMinutes / 60),
+        Math.floor(totalMinutes % 60),
+        Math.floor(Math.random() * 60), // random seconds 0-59
+        0
+      );
+
+      // Walk through all sequence steps, each offset from the previous
+      let prevTime = new Date(sendDate);
+      for (const seq of sequences) {
+        const seqTime = new Date(prevTime);
+        seqTime.setDate(seqTime.getDate() + (seq.delay_days   || 0));
+        seqTime.setHours(seqTime.getHours() + (seq.delay_hours || 0));
+
+        // For follow-up steps: snap to working window if outside
+        if (seq.step_number > 1) {
+          const h = seqTime.getHours();
+          if (h < winStart) {
+            seqTime.setHours(winStart, Math.floor(Math.random() * 60), Math.floor(Math.random() * 60), 0);
+          } else if (h >= winEnd) {
+            seqTime.setDate(seqTime.getDate() + 1);
+            seqTime.setHours(winStart, Math.floor(Math.random() * 60), Math.floor(Math.random() * 60), 0);
+          }
+        }
+
+        sends.push({ contact, sequence: seq, scheduled_at: seqTime.toISOString() });
+        prevTime = seqTime;
+      }
+    }
+
+    dayOffset++;
+  }
+
+  return sends;
 }
 
 // ── Personalize template ─────────────────────────
@@ -22,15 +170,13 @@ function personalize(template, contact, account) {
   try {
     const custom = JSON.parse(contact.custom_fields || '{}');
     const fallbacks = custom._fallbacks || {};
-    // Build signature from account
     let signature = '';
     if (account?.signature) {
       try {
         const sig = JSON.parse(account.signature);
         const raw = sig.mode === 'plain' ? (sig.plain || '') : (sig.html || sig.plain || '');
-        // Replace signature-level variables
         signature = raw
-          .replace(/\{\{from_name\}\}/g, account.from_name || '')
+          .replace(/\{\{from_name\}\}/g,  account.from_name  || '')
           .replace(/\{\{from_email\}\}/g, account.from_email || '');
       } catch { signature = account.signature || ''; }
     }
@@ -72,8 +218,7 @@ function buildBody(html, sendId, trackClicks, trackOpens, canSpamFooter) {
   return body;
 }
 
-// ── Check hourly rate limit ──────────────────────
-// Count how many emails this account sent in the last 60 minutes
+// ── Count sends in last hour for an account ──────
 async function getSentLastHour(emailAccountId) {
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const row = await dbGet(`
@@ -83,10 +228,11 @@ async function getSentLastHour(emailAccountId) {
   return row?.count || 0;
 }
 
-// ── Main send processor ──────────────────────────
+// ── Main send processor (called by cron every 2 min) ──
 async function processPendingSends() {
   const now = new Date().toISOString();
 
+  // Pick up to 30 pending sends that are due
   const pending = await dbAll(`
     SELECT s.*,
       c.email,c.first_name,c.last_name,c.company,c.title,c.website,c.custom_fields,
@@ -96,6 +242,7 @@ async function processPendingSends() {
       ea.from_name,ea.from_email,ea.signature,
       ea.daily_limit as acc_limit,ea.sent_today,
       ea.emails_per_hour,ea.delay_min,ea.delay_max,
+      ea.send_window_start,ea.send_window_end,
       u.can_spam_footer
     FROM sends s
     JOIN contacts c ON s.contact_id=c.id
@@ -106,41 +253,48 @@ async function processPendingSends() {
     WHERE s.status='pending' AND s.scheduled_at<=?
     AND camp.status='active'
     AND c.unsubscribed=0 AND c.bounced=0
-    ORDER BY s.scheduled_at ASC LIMIT 50`, [now]);
+    ORDER BY s.scheduled_at ASC LIMIT 30`, [now]);
 
-  // Track per-account hourly counts in memory for this batch
+  if (pending.length === 0) return;
+
+  // Per-account hourly counters (cached for this batch)
   const hourlyCache = {};
-  let lastAccountId = null;
-  let emailsInBatch = 0;
 
-  for (const send of pending) {
-    // ── Inbox Rotation: pick a random account if rotation is set ──
-    let activeSend = send;
+  for (let send of pending) {
+    // ── Inbox rotation: pick a random account if configured ──
     if (send.rotation_account_ids) {
       try {
         const rotIds = JSON.parse(send.rotation_account_ids || '[]');
         if (rotIds.length > 1) {
-          // Pick a random account from the rotation list
           const randomId = rotIds[Math.floor(Math.random() * rotIds.length)];
           if (randomId !== send.email_account_id) {
             const rotAcc = await dbGet(`SELECT * FROM email_accounts WHERE id=?`, [randomId]);
             if (rotAcc && rotAcc.sent_today < (rotAcc.daily_limit || 50)) {
-              activeSend = { ...send, ...rotAcc, email_account_id: rotAcc.id, acc_limit: rotAcc.daily_limit || 50, smtp_pass: rotAcc.password };
+              send = { ...send, ...rotAcc, email_account_id: rotAcc.id, acc_limit: rotAcc.daily_limit || 50, smtp_pass: rotAcc.password };
             }
           }
         }
       } catch {}
     }
-    send = activeSend;
 
-    // ── Check daily limit ──
+    // ── Sending window check ──
+    // Only send if current time is within this account's configured window.
+    // Grace: if the send is more than 4h overdue we send anyway (prevents indefinite delay).
+    const gracePeriodMs = 4 * 60 * 60 * 1000;
+    const isOverdue     = Date.now() - new Date(send.scheduled_at).getTime() > gracePeriodMs;
+    if (!isOverdue && !isWithinSendingWindow(send)) {
+      // Outside window — skip for now; cron will retry once window opens
+      continue;
+    }
+
+    // ── Daily limit check ──
     if (send.sent_today >= send.acc_limit) {
       console.log(`⏸ Daily limit reached for ${send.from_email} (${send.sent_today}/${send.acc_limit})`);
       continue;
     }
 
-    // ── Check hourly limit ──
-    const emailsPerHour = send.emails_per_hour || 10; // default 10/hr if not set
+    // ── Hourly limit check ──
+    const emailsPerHour = send.emails_per_hour || 10;
     if (!hourlyCache[send.email_account_id]) {
       hourlyCache[send.email_account_id] = await getSentLastHour(send.email_account_id);
     }
@@ -152,23 +306,23 @@ async function processPendingSends() {
     try {
       const account   = { from_name: send.from_name, from_email: send.from_email, signature: send.signature };
       const subject   = personalize(send.subject, send, account);
-      const rawBody   = personalize(send.body, send, account);
+      const rawBody   = personalize(send.body,    send, account);
       const finalBody = buildBody(rawBody, send.id, send.track_clicks, send.track_opens, send.can_spam_footer);
 
       const transporter = nodemailer.createTransport({
-        host: send.host,
-        port: send.port,
-        secure: send.secure === 1 || send.port === 465 || send.port === 993,
-        auth: { user: send.username, pass: send.smtp_pass },
-        tls: { rejectUnauthorized: false },
+        host:   send.host,
+        port:   send.port,
+        secure: send.secure === 1 || send.port === 465,
+        auth:   { user: send.username, pass: send.smtp_pass },
+        tls:    { rejectUnauthorized: false },
       });
 
       const info = await transporter.sendMail({
-        from: `"${send.from_name}" <${send.from_email}>`,
-        to:   send.email,
+        from:    `"${send.from_name}" <${send.from_email}>`,
+        to:      send.email,
         subject,
-        html: finalBody,
-        text: rawBody.replace(/<[^>]*>/g, ''),
+        html:    finalBody,
+        text:    rawBody.replace(/<[^>]*>/g, ''),
       });
 
       await dbRun(`UPDATE sends SET status='sent', sent_at=?, message_id=? WHERE id=?`,
@@ -176,20 +330,15 @@ async function processPendingSends() {
       await dbRun(`UPDATE email_accounts SET sent_today=sent_today+1 WHERE id=?`,
         [send.email_account_id]);
 
-      // Update in-memory hourly counter
       hourlyCache[send.email_account_id] = (hourlyCache[send.email_account_id] || 0) + 1;
+      console.log(`✅ Sent → ${send.email} via ${send.from_email} [${hourlyCache[send.email_account_id]}/${emailsPerHour} this hour]`);
 
-      console.log(`✅ Sent to ${send.email} via ${send.from_email} (${hourlyCache[send.email_account_id]}/${emailsPerHour} this hour)`);
-
-      // ── Random delay between emails ──────────────
-      // Only delay if there are more sends coming
-      const delayMs = randomDelay(send.delay_min, send.delay_max);
-      const delaySec = Math.round(delayMs / 1000);
-      console.log(`⏱ Waiting ${delaySec}s before next email (random ${send.delay_min||45}–${send.delay_max||120}s)`);
-      await sleep(delayMs);
+      // Small SMTP recovery pause (2-5s) — not the main rate-limiter
+      // Real pacing is in the humanized scheduled_at timestamps
+      await sleep(2000 + Math.floor(Math.random() * 3000));
 
     } catch (err) {
-      console.error(`❌ Send failed to ${send.email}:`, err.message);
+      console.error(`❌ Send failed → ${send.email}:`, err.message);
       await dbRun(`UPDATE sends SET status='failed', error_message=? WHERE id=?`,
         [err.message, send.id]);
     }
@@ -199,8 +348,10 @@ async function processPendingSends() {
 // ── Reset daily counters at midnight ────────────
 async function resetDailyCounters() {
   const today = new Date().toISOString().split('T')[0];
-  await dbRun(`UPDATE email_accounts SET sent_today=0, last_reset=? WHERE last_reset IS NULL OR last_reset<?`,
-    [today, today]);
+  await dbRun(
+    `UPDATE email_accounts SET sent_today=0, last_reset=? WHERE last_reset IS NULL OR last_reset<?`,
+    [today, today]
+  );
 }
 
-module.exports = { processPendingSends, resetDailyCounters };
+module.exports = { processPendingSends, resetDailyCounters, humanScheduleSends, SENDING_PRESETS };
