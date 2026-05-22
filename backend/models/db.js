@@ -279,6 +279,8 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN last_warmup_at DATETIME`,
     // ── Team member force-password-change ──
     `ALTER TABLE team_members ADD COLUMN must_change_password INTEGER DEFAULT 0`,
+    // ── Message archive ──
+    `ALTER TABLE messages ADD COLUMN archived INTEGER DEFAULT 0`,
   ];
 
   for (const sql of migrations) {

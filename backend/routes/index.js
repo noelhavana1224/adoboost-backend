@@ -547,7 +547,7 @@ messagesRouter.get('/inbox', async (req, res) => {
   try {
     const { search, status, tag, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.is_auto_reply=0']; const params=[req.effectiveUserId];
+    let where=['m.user_id=?','m.is_auto_reply=0','(m.archived=0 OR m.archived IS NULL)']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     if (status) { where.push('m.status=?'); params.push(status); }
     if (tag) { where.push('m.tag=?'); params.push(tag); }
@@ -564,12 +564,58 @@ messagesRouter.get('/auto-replies', async (req, res) => {
   try {
     const { search, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.is_auto_reply=1']; const params=[req.effectiveUserId];
+    let where=['m.user_id=?','m.is_auto_reply=1','(m.archived=0 OR m.archived IS NULL)']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
     res.json({ messages, total, page: Number(page) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get archived messages
+messagesRouter.get('/archived', async (req, res) => {
+  try {
+    const { search, page=1, limit=50 } = req.query;
+    const offset = (page-1)*limit;
+    let where=['m.user_id=?','m.archived=1']; const params=[req.effectiveUserId];
+    if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
+    const w='WHERE '+where.join(' AND ');
+    const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
+    const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
+    res.json({ messages, total, page: Number(page) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Archive a message thread (all messages with same base subject from same sender)
+messagesRouter.post('/:id/archive', async (req, res) => {
+  try {
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!msg) return res.status(404).json({ error: 'Not found' });
+    const baseSubject = (msg.subject||'').replace(/^(Re:\s*|Fwd:\s*)+/gi,'').trim();
+    if (baseSubject) {
+      await dbRun(`UPDATE messages SET archived=1 WHERE user_id=? AND (from_email=? OR status='sent') AND (subject LIKE ? OR subject LIKE ? OR subject=?)`,
+        [req.effectiveUserId, msg.from_email, `%${baseSubject}%`, `Re: %${baseSubject}%`, baseSubject]);
+    } else {
+      await dbRun('UPDATE messages SET archived=1 WHERE id=?', [req.params.id]);
+    }
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Unarchive (restore to inbox)
+messagesRouter.post('/:id/unarchive', async (req, res) => {
+  try {
+    const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!msg) return res.status(404).json({ error: 'Not found' });
+    const baseSubject = (msg.subject||'').replace(/^(Re:\s*|Fwd:\s*)+/gi,'').trim();
+    if (baseSubject) {
+      await dbRun(`UPDATE messages SET archived=0 WHERE user_id=? AND (from_email=? OR status='sent') AND (subject LIKE ? OR subject LIKE ? OR subject=?)`,
+        [req.effectiveUserId, msg.from_email, `%${baseSubject}%`, `Re: %${baseSubject}%`, baseSubject]);
+    } else {
+      await dbRun('UPDATE messages SET archived=0 WHERE id=?', [req.params.id]);
+    }
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
