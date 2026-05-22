@@ -202,6 +202,7 @@ function initSchema() {
       password TEXT NOT NULL,
       permissions TEXT DEFAULT '{}',
       status TEXT DEFAULT 'active',
+      must_change_password INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (owner_id) REFERENCES users(id))`);
 
@@ -276,6 +277,8 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN warmup_max_count INTEGER DEFAULT 50`,
     `ALTER TABLE email_accounts ADD COLUMN warmup_health INTEGER DEFAULT 0`,
     `ALTER TABLE email_accounts ADD COLUMN last_warmup_at DATETIME`,
+    // ── Team member force-password-change ──
+    `ALTER TABLE team_members ADD COLUMN must_change_password INTEGER DEFAULT 0`,
   ];
 
   for (const sql of migrations) {

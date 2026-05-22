@@ -1165,8 +1165,8 @@ teamRouter.post('/invite', async (req, res) => {
     const tempPassword = password || crypto.randomBytes(8).toString('hex');
     const hashed = await bcrypt.hash(tempPassword, 10);
     const id = require('uuid').v4();
-    await dbRun('INSERT INTO team_members (id,owner_id,name,email,password,permissions,status) VALUES (?,?,?,?,?,?,?)',
-      [id, ownerId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active']);
+    await dbRun('INSERT INTO team_members (id,owner_id,name,email,password,permissions,status,must_change_password) VALUES (?,?,?,?,?,?,?,?)',
+      [id, ownerId, name||'', email.toLowerCase(), hashed, permissions||'{}', 'active', 1]);
     // Send invite email
     try {
       const ownerData = await dbGet('SELECT name FROM users WHERE id=?', [ownerId]);
@@ -1174,6 +1174,22 @@ teamRouter.post('/invite', async (req, res) => {
       await sendTeamInviteEmail(ownerData?.name||'Your account owner', name||email, email.toLowerCase(), tempPassword, false);
     } catch(e) { console.error('Invite email error:', e.message); }
     res.json({ success:true, id, tempPassword, email: email.toLowerCase(), name: name||email });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Team member: set own password (first login or voluntary change) ──
+// MUST be defined BEFORE /:id to avoid Express matching /change-password as an id
+teamRouter.put('/change-password', async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    // req.userId is the team member's own id (set by authMiddleware)
+    const member = await dbGet('SELECT * FROM team_members WHERE id=?', [req.userId]);
+    if (!member) return res.status(404).json({ error: 'Member not found' });
+    const bcrypt = require('bcryptjs');
+    const hashed = await bcrypt.hash(password, 10);
+    await dbRun('UPDATE team_members SET password=?, must_change_password=0 WHERE id=?', [hashed, req.userId]);
+    res.json({ success: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

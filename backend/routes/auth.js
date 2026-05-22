@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { dbGet, dbRun } = require('../models/db');
+const { dbGet, dbAll, dbRun } = require('../models/db');
 const { JWT_SECRET, authMiddleware } = require('../middleware/auth');
 const { sendWelcomeEmail } = require('../services/emailSystem');
 const router = express.Router();
@@ -47,28 +47,40 @@ router.post('/login', async (req, res) => {
       return res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
     }
 
-    // Check team_members table
-    const member = await dbGet('SELECT * FROM team_members WHERE LOWER(email)=?', [email.toLowerCase().trim()]);
-    if (member) {
-      if (member.status === 'inactive') return res.status(403).json({ error: 'Your account has been deactivated. Contact your account owner.' });
-      const valid = await bcrypt.compare(password, member.password);
-      if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    // Check team_members table — fetch ALL rows with this email (same person can be on multiple accounts)
+    // Try each one and use the first whose password hash matches.
+    const members = await dbAll('SELECT * FROM team_members WHERE LOWER(email)=?', [email.toLowerCase().trim()]);
+    if (members.length > 0) {
+      let matched = null;
+      for (const m of members) {
+        if (m.status === 'inactive') continue; // skip deactivated
+        const valid = await bcrypt.compare(password, m.password);
+        if (valid) { matched = m; break; }
+      }
+      if (!matched) {
+        const anyActive = members.some(m => m.status !== 'inactive');
+        if (!anyActive) return res.status(403).json({ error: 'Your account has been deactivated. Contact your account owner.' });
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
       // Get owner info for plan
-      const owner = await dbGet('SELECT plan FROM users WHERE id=?', [member.owner_id]);
+      const owner = await dbGet('SELECT plan FROM users WHERE id=?', [matched.owner_id]);
       // Parse permissions
       let permissions = {};
-      try { permissions = JSON.parse(member.permissions || '{}'); } catch {}
-      const token = jwt.sign({ userId: member.id, isTeamMember: true, ownerId: member.owner_id }, JWT_SECRET, { expiresIn: '7d' });
+      try { permissions = JSON.parse(matched.permissions || '{}'); } catch {}
+      const mustChangePassword = matched.must_change_password === 1;
+      const token = jwt.sign({ userId: matched.id, isTeamMember: true, ownerId: matched.owner_id }, JWT_SECRET, { expiresIn: '7d' });
       return res.json({
         token,
+        mustChangePassword,
         user: {
-          id: member.id,
-          email: member.email,
-          name: member.name,
+          id: matched.id,
+          email: matched.email,
+          name: matched.name,
           role: 'team_member',
           plan: owner?.plan || 'trial',
           permissions,
-          owner_id: member.owner_id,
+          owner_id: matched.owner_id,
+          mustChangePassword,
         }
       });
     }
@@ -92,6 +104,7 @@ router.get('/me', authMiddleware, async (req, res) => {
         id: member.id, email: member.email, name: member.name,
         role: 'team_member', plan: owner?.plan || 'trial',
         permissions, owner_id: member.owner_id,
+        mustChangePassword: member.must_change_password === 1,
       });
     }
     res.status(404).json({ error: 'User not found' });
