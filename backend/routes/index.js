@@ -788,34 +788,36 @@ ticketsRouter.get('/', async (req, res) => {
 // ── Analytics ───────────────────────────────────
 const analyticsRouter = express.Router();
 analyticsRouter.use(authMiddleware);
+analyticsRouter.use(effectiveUserMiddleware); // team members see owner's data
 
 analyticsRouter.get('/summary', async (req, res) => {
   try {
+    const uid = req.effectiveUserId;
     const { range='7' } = req.query;
-    const totalCampaigns = (await dbGet('SELECT COUNT(*) as c FROM campaigns WHERE user_id=?', [req.userId])).c;
-    const activeCampaigns = (await dbGet(`SELECT COUNT(*) as c FROM campaigns WHERE user_id=? AND status='active'`, [req.userId])).c;
-    const totalContacts = (await dbGet('SELECT COUNT(*) as c FROM contacts WHERE user_id=?', [req.userId])).c;
+    const totalCampaigns = (await dbGet('SELECT COUNT(*) as c FROM campaigns WHERE user_id=?', [uid])).c;
+    const activeCampaigns = (await dbGet(`SELECT COUNT(*) as c FROM campaigns WHERE user_id=? AND status='active'`, [uid])).c;
+    const totalContacts = (await dbGet('SELECT COUNT(*) as c FROM contacts WHERE user_id=?', [uid])).c;
     const stats = await dbGet(`SELECT
       SUM(CASE WHEN s.status='sent' THEN 1 ELSE 0 END) as total_sent,
       SUM(CASE WHEN s.opened_at IS NOT NULL THEN 1 ELSE 0 END) as total_opened,
       SUM(CASE WHEN s.clicked_at IS NOT NULL THEN 1 ELSE 0 END) as total_clicked,
       SUM(CASE WHEN s.replied=1 THEN 1 ELSE 0 END) as total_replied,
       SUM(CASE WHEN s.bounced=1 THEN 1 ELSE 0 END) as total_bounced
-      FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=?`, [req.userId]);
-    const dailySends = await dbAll(`SELECT DATE(s.sent_at) as date,COUNT(*) as count FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=? AND s.status='sent' AND s.sent_at>=date('now','-${Number(range)} days') GROUP BY DATE(s.sent_at) ORDER BY date`, [req.userId]);
+      FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=?`, [uid]);
+    const dailySends = await dbAll(`SELECT DATE(s.sent_at) as date,COUNT(*) as count FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=? AND s.status='sent' AND s.sent_at>=date('now','-${Number(range)} days') GROUP BY DATE(s.sent_at) ORDER BY date`, [uid]);
     const topCampaigns = await dbAll(`SELECT c.id,c.name,c.status,
       SUM(CASE WHEN s.status='sent' THEN 1 ELSE 0 END) as sent,
       SUM(CASE WHEN s.opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened,
       SUM(CASE WHEN s.replied=1 THEN 1 ELSE 0 END) as replied
-      FROM campaigns c LEFT JOIN sends s ON c.id=s.campaign_id WHERE c.user_id=? GROUP BY c.id ORDER BY sent DESC LIMIT 5`, [req.userId]);
-    const recentActivity = await dbAll(`SELECT s.sent_at,s.status,c2.email as contact_email,seq.subject,c.name as campaign_name FROM sends s JOIN contacts c2 ON s.contact_id=c2.id JOIN sequences seq ON s.sequence_id=seq.id JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=? AND s.status='sent' ORDER BY s.sent_at DESC LIMIT 10`, [req.userId]);
+      FROM campaigns c LEFT JOIN sends s ON c.id=s.campaign_id WHERE c.user_id=? GROUP BY c.id ORDER BY sent DESC LIMIT 5`, [uid]);
+    const recentActivity = await dbAll(`SELECT s.sent_at,s.status,c2.email as contact_email,seq.subject,c.name as campaign_name FROM sends s JOIN contacts c2 ON s.contact_id=c2.id JOIN sequences seq ON s.sequence_id=seq.id JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=? AND s.status='sent' ORDER BY s.sent_at DESC LIMIT 10`, [uid]);
     res.json({ totalCampaigns, activeCampaigns, totalContacts, ...stats, dailySends, topCampaigns, recentActivity });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 analyticsRouter.get('/campaigns/:id', async (req, res) => {
   try {
-    const campaign = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    const campaign = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!campaign) return res.status(404).json({ error: 'Not found' });
     const bySequence = await dbAll(`SELECT seq.step_number,seq.subject,
       COUNT(s.id) as total, SUM(CASE WHEN s.status='sent' THEN 1 ELSE 0 END) as sent,
