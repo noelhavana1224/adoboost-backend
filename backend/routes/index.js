@@ -1444,6 +1444,20 @@ vaUpsellRouter.post('/va-interest', authMiddleware, async (req, res) => {
   }
 });
 
+// Public plan listing — returns live DB data so the billing page always
+// reflects whatever the admin configured in Plan Management
+vaUpsellRouter.get('/plans', authMiddleware, async (req, res) => {
+  try {
+    const plans = await dbAll(
+      `SELECT id, name, price_monthly, max_contacts, max_campaigns,
+              max_emails_per_day, max_email_accounts, max_ai_credits, features
+       FROM plans WHERE is_active=1 ORDER BY price_monthly ASC`,
+      []
+    );
+    res.json(plans);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Dismiss the upsell (snoozes for 7 days)
 vaUpsellRouter.post('/va-upsell/dismiss', authMiddleware, async (req, res) => {
   try {
