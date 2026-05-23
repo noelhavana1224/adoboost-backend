@@ -1092,9 +1092,9 @@ adminRouter.get('/plans', async (req, res) => {
 
 adminRouter.put('/plans/:id', async (req, res) => {
   try {
-    const { name, price_monthly, max_contacts, max_campaigns, max_emails_per_day, max_email_accounts, features } = req.body;
-    await dbRun('UPDATE plans SET name=?,price_monthly=?,max_contacts=?,max_campaigns=?,max_emails_per_day=?,max_email_accounts=?,features=? WHERE id=?',
-      [name, price_monthly, max_contacts, max_campaigns, max_emails_per_day, max_email_accounts, JSON.stringify(features), req.params.id]);
+    const { name, price_monthly, max_contacts, max_campaigns, max_emails_per_day, max_email_accounts, max_ai_credits, features } = req.body;
+    await dbRun('UPDATE plans SET name=?,price_monthly=?,max_contacts=?,max_campaigns=?,max_emails_per_day=?,max_email_accounts=?,max_ai_credits=?,features=? WHERE id=?',
+      [name, price_monthly, max_contacts, max_campaigns, max_emails_per_day, max_email_accounts, max_ai_credits ?? 10, JSON.stringify(features || []), req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

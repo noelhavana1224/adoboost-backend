@@ -59,10 +59,20 @@ async function getMonthlyUsed(userId) {
   return Number(row?.total) || 0;
 }
 
+async function getPlanCreditLimit(slug) {
+  // Try to read the admin-configured limit from the plans table first
+  const planRow = await dbGet(
+    `SELECT max_ai_credits FROM plans WHERE LOWER(name)=? AND max_ai_credits > 0`,
+    [slug]
+  );
+  // Fall back to hard-coded defaults if the column isn't seeded yet
+  return planRow?.max_ai_credits ?? (PLAN_CREDITS[slug] ?? PLAN_CREDITS.trial);
+}
+
 async function checkCredits(userId, feature) {
   const user  = await dbGet('SELECT plan FROM users WHERE id=?', [userId]);
   const slug  = (user?.plan || 'trial').toLowerCase();
-  const limit = PLAN_CREDITS[slug] ?? PLAN_CREDITS.trial;
+  const limit = await getPlanCreditLimit(slug);
   const cost  = FEATURE_COSTS[feature] || 1;
   const used  = await getMonthlyUsed(userId);
 
@@ -315,7 +325,7 @@ Each reply: 1-3 sentences, sound like a real human, no corporate-speak.`,
 async function getCreditsStatus(userId) {
   const user  = await dbGet('SELECT plan FROM users WHERE id=?', [userId]);
   const slug  = (user?.plan || 'trial').toLowerCase();
-  const limit = PLAN_CREDITS[slug] ?? PLAN_CREDITS.trial;
+  const limit = await getPlanCreditLimit(slug);
   const used  = await getMonthlyUsed(userId);
 
   const nextMonth = new Date();

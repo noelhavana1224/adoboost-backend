@@ -299,6 +299,8 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN sending_preset TEXT DEFAULT 'moderate'`,
     `ALTER TABLE email_accounts ADD COLUMN warmup_window_start INTEGER DEFAULT 9`,
     `ALTER TABLE email_accounts ADD COLUMN warmup_window_end INTEGER DEFAULT 17`,
+    // ── AI credits per plan (0 = not set, will get default seeded below) ──
+    `ALTER TABLE plans ADD COLUMN max_ai_credits INTEGER DEFAULT 0`,
   ];
 
   for (const sql of migrations) {
@@ -309,6 +311,13 @@ function runMigrations() {
       }
     });
   }
+
+  // Seed default AI credit allowances for plans that haven't been configured yet
+  // (max_ai_credits=0 means "not set by admin yet" — safe to apply the default)
+  db.run(`UPDATE plans SET max_ai_credits=10   WHERE LOWER(name) LIKE '%trial%'     AND max_ai_credits=0`);
+  db.run(`UPDATE plans SET max_ai_credits=100  WHERE LOWER(name) LIKE '%starter%'   AND max_ai_credits=0`);
+  db.run(`UPDATE plans SET max_ai_credits=1000 WHERE LOWER(name) LIKE '%pro%'       AND max_ai_credits=0`);
+  db.run(`UPDATE plans SET max_ai_credits=9999 WHERE LOWER(name) LIKE '%unlimited%' AND max_ai_credits=0`);
 
   // Promote first user to admin with unlimited plan
   db.get(`SELECT COUNT(*) as c FROM users WHERE role='admin'`, [], (err, row) => {
