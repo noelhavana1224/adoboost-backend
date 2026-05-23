@@ -944,7 +944,32 @@ adminRouter.get('/stats', async (req, res) => {
     const newUsersWeek = await dbAll(`SELECT date(created_at) as date,COUNT(*) as count FROM users WHERE created_at>=date('now','-7 days') GROUP BY date(created_at) ORDER BY date`, []);
     const planBreakdown = await dbAll(`SELECT plan,COUNT(*) as count FROM users WHERE role!='admin' GROUP BY plan`, []);
     const recentUsers = await dbAll(`SELECT u.id,u.name,u.email,u.plan,u.is_suspended,u.created_at,u.last_login, (SELECT COUNT(*) FROM campaigns WHERE user_id=u.id) as campaigns FROM users u WHERE role!='admin' ORDER BY created_at DESC LIMIT 10`, []);
-    res.json({ totalUsers, activeToday, paidUsers, trialUsers, suspended, totalCampaigns, totalEmails, totalContacts, openTickets, newUsersWeek, planBreakdown, recentUsers });
+
+    // MRR calculation
+    const planPrices = { trial: 0, starter: 29, professional: 79, unlimited: 199 };
+    const mrr = planBreakdown.reduce((sum, p) => sum + (planPrices[p.plan] || 0) * p.count, 0);
+
+    // AI credits used this calendar month (platform-wide)
+    const aiCreditsMonth = (await dbGet(
+      `SELECT COALESCE(SUM(credits_used),0) as total FROM ai_usage_logs WHERE strftime('%Y-%m',created_at)=strftime('%Y-%m','now')`, []
+    )).total;
+
+    // Active / running campaigns
+    const activeCampaigns = (await dbGet(
+      `SELECT COUNT(*) as c FROM campaigns WHERE status IN ('active','sending','scheduled')`, []
+    )).c;
+
+    // Emails sent today
+    const emailsToday = (await dbGet(
+      `SELECT COUNT(*) as c FROM sends WHERE status='sent' AND date(sent_at)=date('now')`, []
+    )).c;
+
+    // AI usage by feature this month
+    const aiByFeature = await dbAll(
+      `SELECT feature, SUM(credits_used) as credits FROM ai_usage_logs WHERE strftime('%Y-%m',created_at)=strftime('%Y-%m','now') GROUP BY feature ORDER BY credits DESC`, []
+    );
+
+    res.json({ totalUsers, activeToday, paidUsers, trialUsers, suspended, totalCampaigns, totalEmails, totalContacts, openTickets, newUsersWeek, planBreakdown, recentUsers, mrr, aiCreditsMonth, activeCampaigns, emailsToday, aiByFeature });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -958,9 +983,40 @@ adminRouter.get('/users', async (req, res) => {
     if (status==='suspended') where.push('is_suspended=1');
     if (status==='active') where.push('is_suspended=0');
     const w='WHERE '+where.join(' AND ');
-    const users = await dbAll(`SELECT u.id,u.name,u.email,u.plan,u.plan_expires_at,u.is_suspended,u.suspension_reason,u.created_at,u.last_login, (SELECT COUNT(*) FROM campaigns WHERE user_id=u.id) as campaigns, (SELECT COUNT(*) FROM contacts WHERE user_id=u.id) as contacts, (SELECT COUNT(*) FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=u.id AND s.status='sent') as emails_sent FROM users u ${w} ORDER BY u.created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
+    const users = await dbAll(`SELECT u.id,u.name,u.email,u.plan,u.plan_expires_at,u.is_suspended,u.suspension_reason,u.created_at,u.last_login, (SELECT COUNT(*) FROM campaigns WHERE user_id=u.id) as campaigns, (SELECT COUNT(*) FROM contacts WHERE user_id=u.id) as contacts, (SELECT COUNT(*) FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=u.id AND s.status='sent') as emails_sent, (SELECT COALESCE(SUM(credits_used),0) FROM ai_usage_logs WHERE user_id=u.id AND strftime('%Y-%m',created_at)=strftime('%Y-%m','now')) as ai_credits FROM users u ${w} ORDER BY u.created_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as c FROM users ${w}`, params)).c;
     res.json({ users, total, page: Number(page) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+adminRouter.get('/users/export', async (req, res) => {
+  try {
+    const users = await dbAll(`SELECT u.id,u.name,u.email,u.plan,u.is_suspended,u.created_at,u.last_login,u.company,u.country,
+      (SELECT COUNT(*) FROM campaigns WHERE user_id=u.id) as campaigns,
+      (SELECT COUNT(*) FROM contacts WHERE user_id=u.id) as contacts,
+      (SELECT COUNT(*) FROM sends s JOIN campaigns c ON s.campaign_id=c.id WHERE c.user_id=u.id AND s.status='sent') as emails_sent,
+      (SELECT COALESCE(SUM(credits_used),0) FROM ai_usage_logs WHERE user_id=u.id AND strftime('%Y-%m',created_at)=strftime('%Y-%m','now')) as ai_credits
+      FROM users u WHERE role!='admin' ORDER BY u.created_at DESC`, []);
+    const headers = ['ID','Name','Email','Company','Country','Plan','Campaigns','Contacts','Emails Sent','AI Credits (Month)','Joined','Last Login','Status'];
+    const escape = v => `"${String(v||'').replace(/"/g,'""')}"`;
+    const rows = users.map(u => [u.id,u.name,u.email,u.company||'',u.country||'',u.plan,u.campaigns,u.contacts,u.emails_sent,u.ai_credits,u.created_at,u.last_login||'',u.is_suspended?'Suspended':'Active'].map(escape).join(','));
+    const csv = [headers.join(','), ...rows].join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="users-${new Date().toISOString().split('T')[0]}.csv"`);
+    res.send(csv);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+adminRouter.post('/users/:id/impersonate', async (req, res) => {
+  try {
+    const target = await dbGet('SELECT id,name,email,plan,role FROM users WHERE id=?', [req.params.id]);
+    if (!target || target.role === 'admin') return res.status(400).json({ error: 'Cannot impersonate this user' });
+    const token = jwt.sign(
+      { id: target.id, email: target.email, plan: target.plan, role: target.role, impersonated: true, impersonated_by: req.user.id },
+      process.env.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+    res.json({ token, user: { id: target.id, name: target.name, email: target.email, plan: target.plan } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
