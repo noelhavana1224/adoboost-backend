@@ -102,6 +102,50 @@ app.use((err, req, res, _next) => {
 // ── Cron jobs ──────────────────────────────────────────────────────────────
 const safeRequire = (mod) => { try { return require(mod); } catch (e) { console.error('[cron] Failed to load', mod, e.message); return null; } };
 
+// ── Internal watchdog — restarts Passenger if health endpoint fails ─────────
+// This is a *second* safety net on top of the external cron / UptimeRobot.
+// It only helps with soft hangs (process alive but unresponsive). Hard crashes
+// are caught by Passenger itself and the external monitor.
+const http  = require('http');
+const https = require('https');
+const path  = require('path');
+const fs    = require('fs');
+let _watchdogFails = 0;
+const RESTART_TXT = path.join(__dirname, '..', 'tmp', 'restart.txt');
+
+function selfPing() {
+  const url = process.env.HEALTH_URL || `http://localhost:${process.env.PORT || 3001}/api/health`;
+  const lib  = url.startsWith('https') ? https : http;
+  const req  = lib.get(url, { timeout: 8000 }, (res) => {
+    if (res.statusCode === 200) {
+      _watchdogFails = 0; // reset on success
+    } else {
+      handleWatchdogFail(`status ${res.statusCode}`);
+    }
+    res.resume();
+  });
+  req.on('error',   (e) => handleWatchdogFail(e.message));
+  req.on('timeout', ()  => { req.destroy(); handleWatchdogFail('timeout'); });
+}
+
+function handleWatchdogFail(reason) {
+  _watchdogFails++;
+  console.error(`[watchdog] Ping failed (${_watchdogFails}/3): ${reason}`);
+  if (_watchdogFails >= 3) {
+    console.error('[watchdog] 3 consecutive failures — triggering Passenger restart');
+    _watchdogFails = 0;
+    try {
+      fs.mkdirSync(path.dirname(RESTART_TXT), { recursive: true });
+      fs.utimesSync(RESTART_TXT, new Date(), new Date());
+    } catch (touchErr) {
+      try { fs.writeFileSync(RESTART_TXT, ''); } catch (_) {}
+    }
+  }
+}
+
+// Ping every 2 minutes; restart only after 3 consecutive failures (6 min total)
+setInterval(selfPing, 2 * 60 * 1000);
+
 const emailService  = safeRequire('./services/emailService');
 const imapService   = safeRequire('./services/imapService');
 const warmupService = safeRequire('./services/warmupService');
