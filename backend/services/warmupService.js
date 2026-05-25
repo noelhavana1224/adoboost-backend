@@ -246,9 +246,14 @@ async function autoReplyWarmupEmails(account) {
 }
 
 // ── Main warmup processor (called every 30 min) ─────────────────────────────
-// KEY DESIGN: sends ONE email per eligible account per run with 70% probability.
-// This naturally spreads warmup emails throughout the day in a completely
-// unpredictable human-like pattern.
+// KEY DESIGN: the synchronous part of this function just DECIDES which accounts
+// send and to whom (fast DB reads). The actual SMTP send for each account is
+// then fired via setTimeout at a RANDOM delay (0–28 min) within the 30-min
+// cron window. This makes every inbox send at a genuinely unpredictable time —
+// indistinguishable from a human sitting at their desk and sending manually.
+//
+// Old behaviour (FIXED): all accounts sent sequentially with 2-8s gaps → burst
+// of N emails landing within seconds of each other every 30 min. Bot pattern.
 async function processWarmup() {
   try {
     // Skip weekends
@@ -270,14 +275,18 @@ async function processWarmup() {
     }
 
     const today = new Date().toISOString().split('T')[0];
-    console.log(`🌡️ Warmup pulse — ${accounts.length} accounts, ${new Date().toLocaleTimeString()}`);
+
+    // Spread all sends across 28 minutes of the 30-min cron window.
+    // Each account gets a unique random fire time → no two sends coincide.
+    const WINDOW_MS = 28 * 60 * 1000;
+    let scheduledCount = 0;
+
+    console.log(`🌡️ Warmup pulse — ${accounts.length} account(s), scheduling sends across ~28 min...`);
 
     for (const account of accounts) {
       try {
         // ── Window check ──
-        if (!isWithinWarmupWindow(account)) {
-          continue; // Outside warmup window for this account
-        }
+        if (!isWithinWarmupWindow(account)) continue;
 
         const target = getDailyTarget(account);
 
@@ -289,15 +298,19 @@ async function processWarmup() {
         const alreadySent = sentRow?.c || 0;
 
         if (alreadySent >= target) {
-          // Daily target reached — try auto-replies instead
-          const { replied } = await autoReplyWarmupEmails(account);
-          if (replied > 0) console.log(`↩️ Auto-replied ${replied}x for ${account.from_email}`);
+          // Daily target reached — schedule an auto-reply check at a random time
+          const delay = Math.floor(Math.random() * WINDOW_MS);
+          const _acc = { ...account };
+          setTimeout(async () => {
+            try {
+              const { replied } = await autoReplyWarmupEmails(_acc);
+              if (replied > 0) console.log(`↩️ Auto-replied ${replied}x for ${_acc.from_email}`);
+            } catch (e) { console.error(`Auto-reply error ${_acc.from_email}:`, e.message); }
+          }, delay);
           continue;
         }
 
         // ── Stochastic skip: 30% chance of NOT sending this run ──
-        // This creates natural randomness — on a 30-min cron with 70% hit rate,
-        // emails arrive at statistically unpredictable intervals.
         if (Math.random() < 0.30) {
           console.log(`⏭ Warmup skip (random) for ${account.from_email} — will retry next run`);
           continue;
@@ -318,39 +331,61 @@ async function processWarmup() {
         const freshPartners = partners.filter(p => !recentSet.has(p.from_email));
         const partner = randomItem(freshPartners.length ? freshPartners : partners);
 
-        const result = await sendWarmupEmail(account, partner);
-        if (result.success) {
-          console.log(`✅ Warmup: ${account.from_email} → ${partner.from_email} (${alreadySent + 1}/${target} today)`);
+        // ── Schedule the actual send at a random offset within the window ────
+        const delay        = Math.floor(Math.random() * WINDOW_MS);
+        const _acc         = { ...account };   // snapshot — avoid closure capturing mutated ref
+        const _partner     = { ...partner };
+        const _alreadySent = alreadySent;
+        const _target      = target;
 
-          // Update warmup days counter (once per day)
-          const lastWarmupDate = account.last_warmup_at
-            ? new Date(account.last_warmup_at).toISOString().split('T')[0]
-            : null;
-          if (lastWarmupDate !== today) {
-            await dbRun(`
-              UPDATE email_accounts SET warmup_days=warmup_days+1, last_warmup_at=? WHERE id=?
-            `, [new Date().toISOString(), account.id]);
+        scheduledCount++;
+        const fireAt = new Date(Date.now() + delay);
+        console.log(`🕐 ${_acc.from_email} → ${_partner.from_email} scheduled at ${fireAt.toLocaleTimeString()}`);
+
+        setTimeout(async () => {
+          try {
+            const result = await sendWarmupEmail(_acc, _partner);
+            if (result.success) {
+              const runToday = new Date().toISOString().split('T')[0];
+              console.log(`✅ Warmup sent: ${_acc.from_email} → ${_partner.from_email} (${_alreadySent + 1}/${_target} today)`);
+
+              // Update warmup_days counter (once per calendar day)
+              const lastWarmupDate = _acc.last_warmup_at
+                ? new Date(_acc.last_warmup_at).toISOString().split('T')[0]
+                : null;
+              if (lastWarmupDate !== runToday) {
+                await dbRun(`
+                  UPDATE email_accounts SET warmup_days=warmup_days+1, last_warmup_at=? WHERE id=?
+                `, [new Date().toISOString(), _acc.id]);
+              }
+
+              // Update health score
+              const replyRate = await getReplyRate(_acc.id);
+              const health = Math.min(100, Math.round(
+                (Math.min(_acc.warmup_days || 0, 30) / 30) * 50 +
+                replyRate * 50
+              ));
+              await dbRun(`UPDATE email_accounts SET warmup_health=? WHERE id=?`, [health, _acc.id]);
+            }
+
+            // Opportunistic auto-reply check a few seconds after the send
+            await sleep(3000 + Math.floor(Math.random() * 7000));
+            const { replied } = await autoReplyWarmupEmails(_acc);
+            if (replied > 0) console.log(`↩️ Auto-replied ${replied}x for ${_acc.from_email}`);
+          } catch (e) {
+            console.error(`Warmup task error for ${_acc.from_email}:`, e.message);
           }
-
-          // Update health score
-          const replyRate = await getReplyRate(account.id);
-          const health = Math.min(100, Math.round(
-            (Math.min(account.warmup_days || 0, 30) / 30) * 50 +
-            replyRate * 50
-          ));
-          await dbRun(`UPDATE email_accounts SET warmup_health=? WHERE id=?`, [health, account.id]);
-        }
-
-        // Check for incoming warmup emails to reply to (opportunistic)
-        const { replied } = await autoReplyWarmupEmails(account);
-        if (replied > 0) console.log(`↩️ Auto-replied ${replied}x for ${account.from_email}`);
-
-        // Brief inter-account pause (2-8s) to avoid simultaneous SMTP connections
-        await sleep(2000 + Math.floor(Math.random() * 6000));
+        }, delay);
 
       } catch (e) {
-        console.error(`Warmup error for ${account.from_email}:`, e.message);
+        console.error(`Warmup scheduling error for ${account.from_email}:`, e.message);
       }
+    }
+
+    if (scheduledCount > 0) {
+      console.log(`🌡️ Warmup: ${scheduledCount} send(s) fire at random times over the next ~28 min`);
+    } else {
+      console.log('🌡️ Warmup: nothing to send this run');
     }
   } catch (e) {
     console.error('processWarmup error:', e.message);
