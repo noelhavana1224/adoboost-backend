@@ -142,12 +142,54 @@ emailAccountsRouter.delete('/:id', async (req, res) => {
 
 emailAccountsRouter.put('/:id', async (req, res) => {
   try {
-    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags, imap_host, imap_port, imap_secure, emails_per_hour, delay_min, delay_max, warmup_start_count, warmup_increment, warmup_max_count, signature, warmup_product, warmup_company, warmup_industry } = req.body;
+    const b = req.body;
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
-    const newPassword = password ? password : acc.password;
-    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=?,imap_host=?,imap_port=?,imap_secure=?,emails_per_hour=?,delay_min=?,delay_max=?,warmup_start_count=?,warmup_increment=?,warmup_max_count=?,signature=?,warmup_product=?,warmup_company=?,warmup_industry=? WHERE id=? AND user_id=?',
-      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, emails_per_hour||acc.emails_per_hour||10, delay_min||acc.delay_min||45, delay_max||acc.delay_max||120, warmup_start_count||acc.warmup_start_count||5, warmup_increment||acc.warmup_increment||5, warmup_max_count||acc.warmup_max_count||50, signature!==undefined?signature:acc.signature||'', warmup_product!==undefined?warmup_product:acc.warmup_product||'', warmup_company!==undefined?warmup_company:acc.warmup_company||'', warmup_industry!==undefined?warmup_industry:acc.warmup_industry||'', req.params.id, req.effectiveUserId]);
+    // Only override a field when it was explicitly sent in the request.
+    // Boolean fields (warmup_enabled, secure, imap_secure) previously had no
+    // fallback, so a partial update (e.g. saving just the signature) would silently
+    // reset warmup_enabled → 0 and disable warmup, wipe tags, etc.
+    const has = (k) => b[k] !== undefined;
+    const bool = (v, fallback) => has(v) ? (b[v] ? 1 : 0) : fallback;
+    const secureBool = (v, fallback) => has(v) ? ((b[v]===true||b[v]===1||b[v]==='true')?1:0) : fallback;
+    const newPassword = b.password ? b.password : acc.password;
+    await dbRun(`UPDATE email_accounts SET
+      name=?,type=?,host=?,port=?,secure=?,
+      username=?,password=?,from_name=?,from_email=?,daily_limit=?,
+      warmup_enabled=?,tags=?,
+      imap_host=?,imap_port=?,imap_secure=?,
+      emails_per_hour=?,delay_min=?,delay_max=?,
+      warmup_start_count=?,warmup_increment=?,warmup_max_count=?,
+      signature=?,warmup_product=?,warmup_company=?,warmup_industry=?
+      WHERE id=? AND user_id=?`,
+      [
+        has('name')               ? b.name               : acc.name,
+        has('type')               ? b.type               : acc.type,
+        has('host')               ? b.host               : acc.host,
+        has('port')               ? b.port               : acc.port,
+        secureBool('secure',        acc.secure),
+        has('username')           ? b.username           : acc.username,
+        newPassword,
+        has('from_name')          ? b.from_name          : acc.from_name,
+        has('from_email')         ? b.from_email         : acc.from_email,
+        has('daily_limit')        ? b.daily_limit        : acc.daily_limit,
+        bool('warmup_enabled',      acc.warmup_enabled),
+        has('tags')               ? JSON.stringify(b.tags||[]) : acc.tags,
+        has('imap_host')          ? b.imap_host          : acc.imap_host || '',
+        has('imap_port')          ? b.imap_port          : acc.imap_port || 993,
+        secureBool('imap_secure',   acc.imap_secure),
+        has('emails_per_hour')    ? b.emails_per_hour    : acc.emails_per_hour || 10,
+        has('delay_min')          ? b.delay_min          : acc.delay_min || 45,
+        has('delay_max')          ? b.delay_max          : acc.delay_max || 120,
+        has('warmup_start_count') ? b.warmup_start_count : acc.warmup_start_count || 5,
+        has('warmup_increment')   ? b.warmup_increment   : acc.warmup_increment || 5,
+        has('warmup_max_count')   ? b.warmup_max_count   : acc.warmup_max_count || 50,
+        has('signature')          ? b.signature          : acc.signature || '',
+        has('warmup_product')     ? b.warmup_product     : acc.warmup_product || '',
+        has('warmup_company')     ? b.warmup_company     : acc.warmup_company || '',
+        has('warmup_industry')    ? b.warmup_industry    : acc.warmup_industry || '',
+        req.params.id, req.effectiveUserId,
+      ]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
