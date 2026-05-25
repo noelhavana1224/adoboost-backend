@@ -1,16 +1,34 @@
+// ── Crash guards — MUST be first ─────────────────────────────────────────
+// Keeps the Passenger process alive even if an unhandled error slips through.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err.message, err.stack);
+  // Do NOT call process.exit() — let Passenger manage the process lifecycle.
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
-const { processPendingSends, resetDailyCounters } = require('./services/emailService');
-const { syncAllInboxes } = require('./services/imapService');
-const { processWarmup } = require('./services/warmupService');
-const {
-  emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
-  exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
-  trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
-  vaUpsellRouter, supportRouter, internalRouter, usageRouter
-} = require('./routes/index');
+
+// ── Load routers with isolation — one bad module won't take down the rest ─
+let emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
+    exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
+    trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
+    vaUpsellRouter, supportRouter, internalRouter, usageRouter;
+
+try {
+  ({
+    emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
+    exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter,
+    trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
+    vaUpsellRouter, supportRouter, internalRouter, usageRouter,
+  } = require('./routes/index'));
+} catch (e) {
+  console.error('[startup] Failed to load routes/index.js:', e.message);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -27,68 +45,97 @@ app.use(cors({
     if (allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
     cb(new Error('CORS not allowed'));
   },
-  credentials: true
+  credentials: true,
 }));
 
 app.use(express.json({ limit: '10mb' }));
 
-app.use('/api/auth',           require('./routes/auth'));
-app.use('/api/email-accounts', emailAccountsRouter);
-app.use('/api/smtp-test',      require('./routes/smtptest'));
-app.use('/api/contacts',       contactsRouter);
-app.use('/api/campaigns',      campaignsRouter);
-app.use('/api/messages',       messagesRouter);
-app.use('/api/exclusions',     exclusionsRouter);
-app.use('/api/templates',      templatesRouter);
-app.use('/api/tickets',        ticketsRouter);
-app.use('/api/analytics',      analyticsRouter);
-app.use('/api/tracking',       trackingRouter);
-app.use('/api/admin',          adminRouter);
-app.use('/api/warmup',         warmupRouter);
-app.use('/api/team-members',   teamRouter);
-app.use('/api/admin/team',     adminTeamRouter);
-app.use('/api/admin/support',  supportRouter);
-app.use('/api',                vaUpsellRouter);
-app.use('/api/auth',           require('./routes/authSystem'));  // forgot/reset password
-app.use('/api/usage',          usageRouter);
-app.use('/api/internal',       internalRouter);
-app.use('/api/ai',             require('./routes/ai'));
-
+// ── Health check — FIRST, always responds regardless of DB / route state ──
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',
   app: 'AdoBoost',
   version: '1.0.0',
-  timestamp: new Date().toISOString()
+  timestamp: new Date().toISOString(),
 }));
 
-// ── Cron: process outgoing emails every 2 min ──────────────────────────────
-cron.schedule('*/2 * * * *', async () => {
-  try { await processPendingSends(); }
-  catch (e) { console.error('Send error:', e.message); }
+// ── Mount routes (each wrapped so one failure won't block the others) ──────
+const mount = (path, router, label) => {
+  if (!router) { console.warn(`[startup] Skipping ${label} — router not loaded`); return; }
+  try { app.use(path, router); }
+  catch (e) { console.error(`[startup] Failed to mount ${label}:`, e.message); }
+};
+
+// Auth routes
+try { app.use('/api/auth', require('./routes/auth')); } catch (e) { console.error('[startup] auth:', e.message); }
+try { app.use('/api/smtp-test', require('./routes/smtptest')); } catch (e) { console.error('[startup] smtptest:', e.message); }
+try { app.use('/api/auth', require('./routes/authSystem')); } catch (e) { console.error('[startup] authSystem:', e.message); }
+try { app.use('/api/ai', require('./routes/ai')); } catch (e) { console.error('[startup] ai routes:', e.message); }
+
+mount('/api/email-accounts', emailAccountsRouter,  'emailAccountsRouter');
+mount('/api/contacts',       contactsRouter,        'contactsRouter');
+mount('/api/campaigns',      campaignsRouter,       'campaignsRouter');
+mount('/api/messages',       messagesRouter,        'messagesRouter');
+mount('/api/exclusions',     exclusionsRouter,      'exclusionsRouter');
+mount('/api/templates',      templatesRouter,       'templatesRouter');
+mount('/api/tickets',        ticketsRouter,         'ticketsRouter');
+mount('/api/analytics',      analyticsRouter,       'analyticsRouter');
+mount('/api/tracking',       trackingRouter,        'trackingRouter');
+mount('/api/admin',          adminRouter,           'adminRouter');
+mount('/api/warmup',         warmupRouter,          'warmupRouter');
+mount('/api/team-members',   teamRouter,            'teamRouter');
+mount('/api/admin/team',     adminTeamRouter,       'adminTeamRouter');
+mount('/api/admin/support',  supportRouter,         'supportRouter');
+mount('/api',                vaUpsellRouter,        'vaUpsellRouter');
+mount('/api/usage',          usageRouter,           'usageRouter');
+mount('/api/internal',       internalRouter,        'internalRouter');
+
+// ── Global error handler — catches any unhandled error in a route ──────────
+// Returns JSON instead of crashing (Passenger would restart on crash anyway,
+// but this keeps the current request clean).
+app.use((err, req, res, _next) => {
+  console.error('[route error]', err.message, err.stack);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error', detail: err.message });
+  }
 });
 
-// ── Cron: reset daily send counters at midnight ────────────────────────────
-cron.schedule('0 0 * * *', async () => {
-  try { await resetDailyCounters(); }
-  catch (e) { console.error('Reset error:', e.message); }
-});
+// ── Cron jobs ──────────────────────────────────────────────────────────────
+const safeRequire = (mod) => { try { return require(mod); } catch (e) { console.error('[cron] Failed to load', mod, e.message); return null; } };
 
-// ── Cron: sync all IMAP inboxes every 5 min ───────────────────────────────
-cron.schedule('*/5 * * * *', async () => {
-  try { await syncAllInboxes(); }
-  catch (e) { console.error('IMAP sync error:', e.message); }
-});
+const emailService  = safeRequire('./services/emailService');
+const imapService   = safeRequire('./services/imapService');
+const warmupService = safeRequire('./services/warmupService');
 
-// ── Cron: warmup pulse every 30 min ───────────────────────────────────────
-// Sends ONE email per eligible account per run with 70% probability,
-// creating a humanized non-robotic warmup pattern throughout the day.
-cron.schedule('*/30 * * * *', async () => {
-  try { await processWarmup(); }
-  catch (e) { console.error('Warmup error:', e.message); }
-});
+if (emailService) {
+  cron.schedule('*/2 * * * *', async () => {
+    try { await emailService.processPendingSends(); }
+    catch (e) { console.error('Send error:', e.message); }
+  });
+  cron.schedule('0 0 * * *', async () => {
+    try { await emailService.resetDailyCounters(); }
+    catch (e) { console.error('Reset error:', e.message); }
+  });
+}
 
+if (imapService) {
+  cron.schedule('*/5 * * * *', async () => {
+    try { await imapService.syncAllInboxes(); }
+    catch (e) { console.error('IMAP sync error:', e.message); }
+  });
+}
+
+if (warmupService) {
+  cron.schedule('*/30 * * * *', async () => {
+    try { await warmupService.processWarmup(); }
+    catch (e) { console.error('Warmup error:', e.message); }
+  });
+}
+
+// ── Start server ───────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`\n🚀 AdoBoost backend running on port ${PORT}`);
-  require('./models/db').getDb();
-  await resetDailyCounters();
+  try { require('./models/db').getDb(); } catch (e) { console.error('[startup] DB init error:', e.message); }
+  if (emailService) {
+    try { await emailService.resetDailyCounters(); } catch (e) { console.error('[startup] resetDailyCounters:', e.message); }
+  }
 });
