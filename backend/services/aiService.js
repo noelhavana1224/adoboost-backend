@@ -1,23 +1,19 @@
 /**
  * AdoBoost AI Service
  * ─────────────────────────────────────────────────────────────────────────────
- * Powered by OpenAI. All features are credit-gated (monthly allowance per plan).
+ * Supports two providers (auto-detected from env vars):
+ *   GROQ_API_KEY    → Groq (free tier) — Llama 3 models
+ *   OPENAI_API_KEY  → OpenAI (paid)    — GPT-4o-mini
+ * Groq is checked first so free testing works out-of-the-box.
  *
+ * All features are credit-gated (monthly allowance per plan).
  * Plans:     trial=10  starter=100  professional=1000  unlimited=9999
  * Features:  rewrite=1  subject_lines=1  spam_score=1  sequence=5  suggest_reply=1
- *
- * Set env:   OPENAI_API_KEY=sk-...
- *            AI_MODEL_QUALITY=gpt-4o-mini  (default)
- *            AI_MODEL_FAST=gpt-4o-mini     (default)
  */
 
 const OpenAI  = require('openai');
 const { dbGet, dbRun } = require('../models/db');
 const { v4: uuidv4 }   = require('uuid');
-
-// ── Models (configurable via env) ───────────────────────────────────────────
-const MODEL_QUALITY = process.env.AI_MODEL_QUALITY || 'gpt-4o-mini';
-const MODEL_FAST    = process.env.AI_MODEL_FAST    || 'gpt-4o-mini';
 
 // ── Plan monthly credit allowances ──────────────────────────────────────────
 const PLAN_CREDITS = {
@@ -36,14 +32,39 @@ const FEATURE_COSTS = {
   suggest_reply: 1,
 };
 
-// ── Lazy OpenAI client ───────────────────────────────────────────────────────
-let _openai = null;
-function getOpenAI() {
-  if (!_openai) {
-    if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set in environment');
-    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// ── AI provider — lazy singleton ─────────────────────────────────────────────
+// Priority: GROQ_API_KEY (free) → OPENAI_API_KEY (paid)
+// Models:
+//   Groq  quality → llama-3.3-70b-versatile  (best free model for complex tasks)
+//   Groq  fast    → llama-3.1-8b-instant      (fastest free model)
+//   OpenAI        → gpt-4o-mini               (cheapest paid model)
+let _aiClient = null;
+let _modelQuality = null;
+let _modelFast    = null;
+
+function getClient() {
+  if (_aiClient) return { ai: _aiClient, mq: _modelQuality, mf: _modelFast };
+
+  if (process.env.GROQ_API_KEY) {
+    _aiClient     = new OpenAI({
+      apiKey:  process.env.GROQ_API_KEY,
+      baseURL: 'https://api.groq.com/openai/v1',
+    });
+    _modelQuality = 'llama-3.3-70b-versatile';
+    _modelFast    = 'llama-3.1-8b-instant';
+    console.log('[AI] Provider: Groq (free tier)');
+  } else if (process.env.OPENAI_API_KEY) {
+    _aiClient     = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    _modelQuality = process.env.AI_MODEL_QUALITY || 'gpt-4o-mini';
+    _modelFast    = process.env.AI_MODEL_FAST    || 'gpt-4o-mini';
+    console.log('[AI] Provider: OpenAI');
+  } else {
+    throw new Error(
+      'No AI provider configured. Set GROQ_API_KEY (free) or OPENAI_API_KEY in environment variables.'
+    );
   }
-  return _openai;
+
+  return { ai: _aiClient, mq: _modelQuality, mf: _modelFast };
 }
 
 // ── Credit helpers ───────────────────────────────────────────────────────────
@@ -108,9 +129,10 @@ const TONE_INSTRUCTIONS = {
 async function rewriteEmail(userId, emailBody, tone = 'human') {
   await checkCredits(userId, 'rewrite');
   const instr = TONE_INSTRUCTIONS[tone] || TONE_INSTRUCTIONS.human;
+  const { ai, mq } = getClient();
 
-  const res = await getOpenAI().chat.completions.create({
-    model: MODEL_QUALITY,
+  const res = await ai.chat.completions.create({
+    model: mq,
     max_tokens: 700,
     temperature: 0.7,
     messages: [
@@ -136,7 +158,7 @@ Return ONLY the rewritten email body. No explanation, no labels, no preamble.`,
   });
 
   const result = res.choices[0].message.content.trim();
-  await logUsage(userId, 'rewrite', FEATURE_COSTS.rewrite, MODEL_QUALITY,
+  await logUsage(userId, 'rewrite', FEATURE_COSTS.rewrite, mq,
     res.usage?.prompt_tokens, res.usage?.completion_tokens);
   return result;
 }
@@ -144,9 +166,10 @@ Return ONLY the rewritten email body. No explanation, no labels, no preamble.`,
 // ── 2. Generate subject lines ────────────────────────────────────────────────
 async function generateSubjectLines(userId, emailBody) {
   await checkCredits(userId, 'subject_lines');
+  const { ai, mf } = getClient();
 
-  const res = await getOpenAI().chat.completions.create({
-    model: MODEL_FAST,
+  const res = await ai.chat.completions.create({
+    model: mf,
     max_tokens: 450,
     temperature: 0.85,
     messages: [
@@ -179,7 +202,7 @@ Return ONLY a numbered list of 10 subject lines. No preamble, no labels, no expl
     .filter(Boolean)
     .slice(0, 10);
 
-  await logUsage(userId, 'subject_lines', FEATURE_COSTS.subject_lines, MODEL_FAST,
+  await logUsage(userId, 'subject_lines', FEATURE_COSTS.subject_lines, mf,
     res.usage?.prompt_tokens, res.usage?.completion_tokens);
   return lines;
 }
@@ -187,11 +210,12 @@ Return ONLY a numbered list of 10 subject lines. No preamble, no labels, no expl
 // ── 3. Spam score analysis ───────────────────────────────────────────────────
 async function analyzeSpam(userId, subject, body) {
   await checkCredits(userId, 'spam_score');
+  const { ai, mq } = getClient();  // use quality model — needs reliable JSON output
 
   const cleanBody = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
-  const res = await getOpenAI().chat.completions.create({
-    model: MODEL_FAST,
+  const res = await ai.chat.completions.create({
+    model: mq,
     max_tokens: 700,
     temperature: 0.2,
     messages: [
@@ -229,7 +253,7 @@ Score guide: 0-20=A (clean), 21-40=B (minor), 41-60=C (needs work), 61-80=D (ris
     result = { score: 0, grade: 'A', verdict: 'inbox', summary: 'Looks clean.', issues: [] };
   }
 
-  await logUsage(userId, 'spam_score', FEATURE_COSTS.spam_score, MODEL_FAST,
+  await logUsage(userId, 'spam_score', FEATURE_COSTS.spam_score, mq,
     res.usage?.prompt_tokens, res.usage?.completion_tokens);
   return result;
 }
@@ -237,9 +261,10 @@ Score guide: 0-20=A (clean), 21-40=B (minor), 41-60=C (needs work), 61-80=D (ris
 // ── 4. Generate full sequence ────────────────────────────────────────────────
 async function generateSequence(userId, audience, offer, niche) {
   await checkCredits(userId, 'sequence');
+  const { ai, mq } = getClient();
 
-  const res = await getOpenAI().chat.completions.create({
-    model: MODEL_QUALITY,
+  const res = await ai.chat.completions.create({
+    model: mq,
     max_tokens: 1400,
     temperature: 0.75,
     messages: [
@@ -276,7 +301,7 @@ Return VALID JSON array only — no markdown, no code fence, no extra text:
     if (!Array.isArray(sequences)) sequences = [];
   } catch { sequences = []; }
 
-  await logUsage(userId, 'sequence', FEATURE_COSTS.sequence, MODEL_QUALITY,
+  await logUsage(userId, 'sequence', FEATURE_COSTS.sequence, mq,
     res.usage?.prompt_tokens, res.usage?.completion_tokens);
   return sequences;
 }
@@ -284,9 +309,10 @@ Return VALID JSON array only — no markdown, no code fence, no extra text:
 // ── 5. Suggest replies ───────────────────────────────────────────────────────
 async function suggestReplies(userId, threadContext) {
   await checkCredits(userId, 'suggest_reply');
+  const { ai, mq } = getClient();
 
-  const res = await getOpenAI().chat.completions.create({
-    model: MODEL_QUALITY,
+  const res = await ai.chat.completions.create({
+    model: mq,
     max_tokens: 550,
     temperature: 0.7,
     messages: [
@@ -316,7 +342,7 @@ Each reply: 1-3 sentences, sound like a real human, no corporate-speak.`,
     replies = JSON.parse(res.choices[0].message.content.trim());
   } catch { replies = []; }
 
-  await logUsage(userId, 'suggest_reply', FEATURE_COSTS.suggest_reply, MODEL_QUALITY,
+  await logUsage(userId, 'suggest_reply', FEATURE_COSTS.suggest_reply, mq,
     res.usage?.prompt_tokens, res.usage?.completion_tokens);
   return replies;
 }
