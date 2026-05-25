@@ -132,6 +132,78 @@ emailAccountsRouter.post('/:id/test', async (req, res) => {
   }
 });
 
+// ── Bulk Import ─────────────────────────────────
+emailAccountsRouter.post('/bulk-import', async (req, res) => {
+  try {
+    const { accounts } = req.body;
+    if (!Array.isArray(accounts) || !accounts.length)
+      return res.status(400).json({ error: 'No accounts provided' });
+
+    let imported = 0;
+    const errors = [];
+
+    for (let i = 0; i < accounts.length; i++) {
+      const r = accounts[i];
+      // Normalize: accept any case/spacing in header names
+      const get = (key) => {
+        const lower = key.toLowerCase().replace(/[\s_-]/g, '');
+        for (const k of Object.keys(r)) {
+          if (k.toLowerCase().replace(/[\s_-]/g, '') === lower) return String(r[k] || '').trim();
+        }
+        return '';
+      };
+
+      const username  = get('username') || get('email');
+      const password  = get('password');
+      const host      = get('host') || get('smtphost') || get('smtpserver');
+      const portRaw   = get('port') || get('smtpport');
+      const port      = parseInt(portRaw) || 587;
+      const secureRaw = get('secure') || get('ssl') || '';
+      const secure    = (['1','true','yes','ssl','tls'].includes(secureRaw.toLowerCase()) || port === 465) ? 1 : 0;
+      const imapHost  = get('imaphost') || get('pophost') || '';
+      const imapPortR = get('imapport') || get('popport') || '993';
+      const imapPort  = parseInt(imapPortR) || 993;
+      const imapSecR  = get('imapsecure') || get('popsecure') || '1';
+      const imapSec   = ['0','false','no'].includes(imapSecR.toLowerCase()) ? 0 : 1;
+      const fromName  = get('fromname') || get('name') || username;
+      const fromEmail = get('fromemail') || username;
+      const name      = get('name') || get('accountname') || fromEmail;
+      const dailyLim  = parseInt(get('dailylimit') || get('limit')) || 50;
+
+      if (!username || !password || !host) {
+        errors.push({ row: i + 2, email: username || '(empty)', reason: 'Missing required: username, password, host' });
+        continue;
+      }
+
+      // Skip exact duplicates (same username for this user)
+      const existing = await dbGet('SELECT id FROM email_accounts WHERE LOWER(username)=? AND user_id=?', [username.toLowerCase(), req.effectiveUserId]);
+      if (existing) {
+        errors.push({ row: i + 2, email: username, reason: 'Already exists — skipped' });
+        continue;
+      }
+
+      try {
+        const id = uuidv4();
+        await dbRun(
+          `INSERT INTO email_accounts
+            (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure,sending_preset,emails_per_hour,delay_min,delay_max)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [id, req.effectiveUserId, name, 'smtp', host, port, secure,
+           username, password, fromName, fromEmail, dailyLim,
+           imapHost, imapPort, imapSec, 'moderate', 6, 60, 180]
+        );
+        imported++;
+      } catch (e) {
+        errors.push({ row: i + 2, email: username, reason: e.message });
+      }
+    }
+
+    res.json({ imported, total: accounts.length, errors });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 emailAccountsRouter.delete('/:id', async (req, res) => {
   try {
     const r = await dbRun('DELETE FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
