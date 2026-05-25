@@ -545,11 +545,18 @@ campaignsRouter.get('/:id', async (req, res) => {
 
 campaignsRouter.post('/', async (req, res) => {
   try {
-    const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences, rotation_account_ids } = req.body;
+    const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences, rotation_account_ids,
+            send_days, timezone, send_time_start, send_time_end, all_hours, start_immediately, visibility } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
     const id = uuidv4();
-    await dbRun('INSERT INTO campaigns (id,user_id,name,email_account_id,list_id,schedule_type,scheduled_at,daily_limit,track_opens,track_clicks,rotation_account_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [id, req.effectiveUserId, name, email_account_id||null, list_id||null, schedule_type||'immediate', scheduled_at||null, daily_limit||50, track_opens!==false?1:0, track_clicks!==false?1:0, rotation_account_ids||'[]']);
+    await dbRun(`INSERT INTO campaigns
+      (id,user_id,name,email_account_id,list_id,schedule_type,scheduled_at,daily_limit,track_opens,track_clicks,rotation_account_ids,
+       send_days,timezone,send_time_start,send_time_end,all_hours,start_immediately,visibility)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, req.effectiveUserId, name, email_account_id||null, list_id||null, schedule_type||'immediate', scheduled_at||null,
+       daily_limit||50, track_opens!==false?1:0, track_clicks!==false?1:0, rotation_account_ids||'[]',
+       send_days||'mon,tue,wed,thu,fri', timezone||'UTC', send_time_start||'08:00', send_time_end||'18:00',
+       all_hours?1:0, start_immediately?1:0, visibility||'everyone']);
     if (sequences?.length) {
       for (let i=0; i<sequences.length; i++) {
         const s=sequences[i];
@@ -565,9 +572,16 @@ campaignsRouter.put('/:id', async (req, res) => {
   try {
     const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
-    const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences, rotation_account_ids } = req.body;
-    await dbRun('UPDATE campaigns SET name=?,email_account_id=?,list_id=?,schedule_type=?,scheduled_at=?,daily_limit=?,track_opens=?,track_clicks=?,rotation_account_ids=? WHERE id=? AND user_id=?',
-      [name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens?1:0, track_clicks?1:0, rotation_account_ids||'[]', req.params.id, req.effectiveUserId]);
+    const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences, rotation_account_ids,
+            send_days, timezone, send_time_start, send_time_end, all_hours, start_immediately, visibility } = req.body;
+    await dbRun(`UPDATE campaigns SET
+      name=?,email_account_id=?,list_id=?,schedule_type=?,scheduled_at=?,daily_limit=?,track_opens=?,track_clicks=?,rotation_account_ids=?,
+      send_days=?,timezone=?,send_time_start=?,send_time_end=?,all_hours=?,start_immediately=?,visibility=?
+      WHERE id=? AND user_id=?`,
+      [name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens?1:0, track_clicks?1:0, rotation_account_ids||'[]',
+       send_days||'mon,tue,wed,thu,fri', timezone||'UTC', send_time_start||'08:00', send_time_end||'18:00',
+       all_hours?1:0, start_immediately?1:0, visibility||'everyone',
+       req.params.id, req.effectiveUserId]);
     if (sequences) {
       await dbRun('DELETE FROM sequences WHERE campaign_id=?', [req.params.id]);
       for (let i=0; i<sequences.length; i++) {

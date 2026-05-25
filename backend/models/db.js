@@ -319,6 +319,14 @@ function runMigrations() {
     `ALTER TABLE sends ADD COLUMN error_message TEXT`,
     // ── notify_email on users ──
     `ALTER TABLE users ADD COLUMN notify_email TEXT`,
+    // ── Campaign scheduling columns ──
+    `ALTER TABLE campaigns ADD COLUMN send_days TEXT DEFAULT 'mon,tue,wed,thu,fri'`,
+    `ALTER TABLE campaigns ADD COLUMN timezone TEXT DEFAULT 'UTC'`,
+    `ALTER TABLE campaigns ADD COLUMN send_time_start TEXT DEFAULT '08:00'`,
+    `ALTER TABLE campaigns ADD COLUMN send_time_end TEXT DEFAULT '18:00'`,
+    `ALTER TABLE campaigns ADD COLUMN all_hours INTEGER DEFAULT 0`,
+    `ALTER TABLE campaigns ADD COLUMN start_immediately INTEGER DEFAULT 0`,
+    `ALTER TABLE campaigns ADD COLUMN visibility TEXT DEFAULT 'everyone'`,
   ];
 
   for (const sql of migrations) {
