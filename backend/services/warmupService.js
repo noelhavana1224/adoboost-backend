@@ -24,6 +24,71 @@ const { getHourInTz } = require('../utils/timezone');
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function randomItem(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
+// ── AI-powered contextual warmup content ────────────────────────────────────
+// Uses OpenAI to generate unique, story-driven business emails contextualised
+// to the sender's actual product / company / industry. Falls back silently to
+// the static template pool if OPENAI_API_KEY is missing or the API fails.
+// We use gpt-4o-mini (cheapest, fast) — warmup emails are tiny prompts.
+async function generateAIWarmupContent(fromAccount) {
+  if (!process.env.OPENAI_API_KEY) return null;
+
+  const product  = (fromAccount.warmup_product  || '').trim();
+  const company  = (fromAccount.warmup_company  || fromAccount.from_name || '').trim();
+  const industry = (fromAccount.warmup_industry || 'technology').trim();
+
+  // Build a persona string from whatever the user filled in
+  const productLine  = product  ? `Product/service: ${product}`   : '';
+  const companyLine  = company  ? `Sender's company: ${company}`  : '';
+  const industryLine = `Industry/niche: ${industry}`;
+  const persona      = [companyLine, productLine, industryLine].filter(Boolean).join('\n');
+
+  const prompt = `You are generating a realistic business warmup email to improve email sender reputation.
+
+${persona}
+
+Write ONE email with:
+- SUBJECT: 5–9 words, specific to the industry/product (NOT "checking in" / "following up" / "touching base")
+- BODY: 4–7 sentences. Tell a mini business story or share a relevant insight. Sound like a real person writing to a colleague or warm prospect. Vary the angle each time (a challenge they solved, an industry trend, a client win, a question about their experience, a useful resource they came across).
+
+Rules:
+- No spam trigger words
+- No unsubscribe links or legal footers
+- Do NOT mention AI or automation
+- Do NOT use placeholder brackets like [Name]
+- Start the body with "Hi," or "Hello," followed by a new line
+- Sign off with just "Best," or "Thanks," or "Warm regards," on its own line
+
+Respond in this exact format:
+SUBJECT: <subject here>
+BODY:
+<body here>`;
+
+  try {
+    const { OpenAI } = require('openai');
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    const resp = await openai.chat.completions.create({
+      model:       'gpt-4o-mini',
+      messages:    [{ role: 'user', content: prompt }],
+      max_tokens:  350,
+      temperature: 0.92,   // high variety — every email different
+    });
+
+    const text = resp.choices[0]?.message?.content?.trim() || '';
+    const subMatch  = text.match(/SUBJECT:\s*(.+)/);
+    const bodyMatch = text.match(/BODY:\s*([\s\S]+)/);
+
+    if (!subMatch || !bodyMatch) return null;
+    return {
+      subject: subMatch[1].trim(),
+      body:    bodyMatch[1].trim(),
+    };
+  } catch (e) {
+    console.error('[warmup] AI content generation failed, using template fallback:', e.message);
+    return null;
+  }
+}
+
 // ── Humanized warmup email content ──────────────
 // Multiple categories for realistic variety
 const WARMUP_SUBJECTS = [
@@ -122,9 +187,12 @@ async function sendWarmupEmail(fromAccount, toAccount) {
       tls:    { rejectUnauthorized: false },
     });
 
-    const subject = randomItem(WARMUP_SUBJECTS);
-    const body    = pickBody();
-    const msgId   = uuidv4();
+    // ── Try AI-generated contextual content first ──
+    // Falls back to static templates if OpenAI isn't configured or fails.
+    const aiContent = await generateAIWarmupContent(fromAccount);
+    const subject   = aiContent ? aiContent.subject : randomItem(WARMUP_SUBJECTS);
+    const body      = aiContent ? aiContent.body    : pickBody();
+    const msgId     = uuidv4();
 
     await transporter.sendMail({
       from:    `"${fromAccount.from_name}" <${fromAccount.from_email}>`,

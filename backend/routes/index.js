@@ -21,7 +21,7 @@ emailAccountsRouter.use(effectiveUserMiddleware);
 
 emailAccountsRouter.get('/', async (req, res) => {
   try {
-    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,emails_per_hour,delay_min,delay_max,send_window_start,send_window_end,warmup_enabled,warmup_days,warmup_health,warmup_start_count,warmup_increment,warmup_max_count,warmup_window_start,warmup_window_end,last_warmup_at,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
+    const accounts = await dbAll('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,sent_today,emails_per_hour,delay_min,delay_max,send_window_start,send_window_end,warmup_enabled,warmup_days,warmup_health,warmup_start_count,warmup_increment,warmup_max_count,warmup_window_start,warmup_window_end,warmup_product,warmup_company,warmup_industry,last_warmup_at,status,tags,imap_host,imap_port,imap_secure,last_synced_at,created_at FROM email_accounts WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
     res.json(accounts);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -142,12 +142,12 @@ emailAccountsRouter.delete('/:id', async (req, res) => {
 
 emailAccountsRouter.put('/:id', async (req, res) => {
   try {
-    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags, imap_host, imap_port, imap_secure, emails_per_hour, delay_min, delay_max, warmup_start_count, warmup_increment, warmup_max_count, signature } = req.body;
+    const { name, type, host, port, secure, username, password, from_name, from_email, daily_limit, warmup_enabled, tags, imap_host, imap_port, imap_secure, emails_per_hour, delay_min, delay_max, warmup_start_count, warmup_increment, warmup_max_count, signature, warmup_product, warmup_company, warmup_industry } = req.body;
     const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!acc) return res.status(404).json({ error: 'Not found' });
     const newPassword = password ? password : acc.password;
-    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=?,imap_host=?,imap_port=?,imap_secure=?,emails_per_hour=?,delay_min=?,delay_max=?,warmup_start_count=?,warmup_increment=?,warmup_max_count=?,signature=? WHERE id=? AND user_id=?',
-      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, emails_per_hour||acc.emails_per_hour||10, delay_min||acc.delay_min||45, delay_max||acc.delay_max||120, warmup_start_count||acc.warmup_start_count||5, warmup_increment||acc.warmup_increment||5, warmup_max_count||acc.warmup_max_count||50, signature!==undefined?signature:acc.signature||'', req.params.id, req.effectiveUserId]);
+    await dbRun('UPDATE email_accounts SET name=?,type=?,host=?,port=?,secure=?,username=?,password=?,from_name=?,from_email=?,daily_limit=?,warmup_enabled=?,tags=?,imap_host=?,imap_port=?,imap_secure=?,emails_per_hour=?,delay_min=?,delay_max=?,warmup_start_count=?,warmup_increment=?,warmup_max_count=?,signature=?,warmup_product=?,warmup_company=?,warmup_industry=? WHERE id=? AND user_id=?',
+      [name||acc.name, type||acc.type, host||acc.host, port||acc.port, (secure===true||secure===1||secure==='true')?1:0, username||acc.username, newPassword, from_name||acc.from_name, from_email||acc.from_email, daily_limit||acc.daily_limit, warmup_enabled?1:0, JSON.stringify(tags||[]), imap_host!==undefined?imap_host:acc.imap_host||'', imap_port||acc.imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0, emails_per_hour||acc.emails_per_hour||10, delay_min||acc.delay_min||45, delay_max||acc.delay_max||120, warmup_start_count||acc.warmup_start_count||5, warmup_increment||acc.warmup_increment||5, warmup_max_count||acc.warmup_max_count||50, signature!==undefined?signature:acc.signature||'', warmup_product!==undefined?warmup_product:acc.warmup_product||'', warmup_company!==undefined?warmup_company:acc.warmup_company||'', warmup_industry!==undefined?warmup_industry:acc.warmup_industry||'', req.params.id, req.effectiveUserId]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

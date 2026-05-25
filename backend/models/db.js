@@ -301,6 +301,10 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN warmup_window_end INTEGER DEFAULT 17`,
     // ── AI credits per plan (0 = not set, will get default seeded below) ──
     `ALTER TABLE plans ADD COLUMN max_ai_credits INTEGER DEFAULT 0`,
+    // ── Warmup persona — used for AI-generated contextual warmup emails ──
+    `ALTER TABLE email_accounts ADD COLUMN warmup_product TEXT DEFAULT ''`,
+    `ALTER TABLE email_accounts ADD COLUMN warmup_company TEXT DEFAULT ''`,
+    `ALTER TABLE email_accounts ADD COLUMN warmup_industry TEXT DEFAULT ''`,
   ];
 
   for (const sql of migrations) {
