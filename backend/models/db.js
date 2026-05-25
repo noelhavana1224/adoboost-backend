@@ -307,6 +307,18 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN warmup_industry TEXT DEFAULT ''`,
     // ── Custom unsubscribe footer (shown when CAN-SPAM footer is off) ──
     `ALTER TABLE users ADD COLUMN custom_unsubscribe_text TEXT DEFAULT ''`,
+    // ── Sends table tracking columns — ensure these exist on all live servers ──
+    // (CREATE TABLE IF NOT EXISTS is skipped when the table already exists, so any
+    //  columns added to the schema later must also appear here as migrations)
+    `ALTER TABLE sends ADD COLUMN opened_at DATETIME`,
+    `ALTER TABLE sends ADD COLUMN clicked_at DATETIME`,
+    `ALTER TABLE sends ADD COLUMN replied INTEGER DEFAULT 0`,
+    `ALTER TABLE sends ADD COLUMN unsubscribed INTEGER DEFAULT 0`,
+    `ALTER TABLE sends ADD COLUMN bounced INTEGER DEFAULT 0`,
+    `ALTER TABLE sends ADD COLUMN message_id TEXT`,
+    `ALTER TABLE sends ADD COLUMN error_message TEXT`,
+    // ── notify_email on users ──
+    `ALTER TABLE users ADD COLUMN notify_email TEXT`,
   ];
 
   for (const sql of migrations) {

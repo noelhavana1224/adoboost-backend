@@ -441,10 +441,10 @@ campaignsRouter.get('/reports', async (req, res) => {
         (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.status='sent') as sent_count,
         (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.opened_at IS NOT NULL) as opened_count,
         (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.clicked_at IS NOT NULL) as clicked_count,
-        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.replied_at IS NOT NULL) as replied_count,
-        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.status='bounced') as bounced_count,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.replied=1) as replied_count,
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND (s.status='bounced' OR s.bounced=1)) as bounced_count,
         (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.status='failed') as failed_count,
-        (SELECT COUNT(*) FROM contacts ct WHERE ct.list_id=c.list_id AND ct.unsubscribed=1) as unsubscribed_count
+        (SELECT COUNT(*) FROM sends s WHERE s.campaign_id=c.id AND s.unsubscribed=1) as unsubscribed_count
       FROM campaigns c
       LEFT JOIN lists l ON c.list_id=l.id
       LEFT JOIN email_accounts ea ON c.email_account_id=ea.id
@@ -936,8 +936,12 @@ const BASE_URL = () => process.env.BASE_URL || 'https://api.adobosolutions.com';
 trackingRouter.get('/open/:sendId', async (req, res) => {
   try {
     const s = await dbGet('SELECT * FROM sends WHERE id=?', [req.params.sendId]);
-    if (s && !s.opened_at) await dbRun('UPDATE sends SET opened_at=? WHERE id=?', [new Date().toISOString(), s.id]);
-  } catch {}
+    if (s && !s.opened_at) {
+      await dbRun('UPDATE sends SET opened_at=? WHERE id=?', [new Date().toISOString(), s.id]);
+    }
+  } catch (e) {
+    console.error('⚠️ Open tracking DB error:', e.message);
+  }
   res.set('Content-Type','image/gif').set('Cache-Control','no-store').send(PIXEL);
 });
 
@@ -945,9 +949,13 @@ trackingRouter.get('/click/:sendId', async (req, res) => {
   const { url } = req.query;
   try {
     const s = await dbGet('SELECT * FROM sends WHERE id=?', [req.params.sendId]);
-    if (s && !s.clicked_at) await dbRun('UPDATE sends SET clicked_at=? WHERE id=?', [new Date().toISOString(), s.id]);
-  } catch {}
-  if (url) return res.redirect(url);
+    if (s && !s.clicked_at) {
+      await dbRun('UPDATE sends SET clicked_at=? WHERE id=?', [new Date().toISOString(), s.id]);
+    }
+  } catch (e) {
+    console.error('⚠️ Click tracking DB error:', e.message);
+  }
+  if (url) return res.redirect(decodeURIComponent(url));
   res.send('OK');
 });
 
