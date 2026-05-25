@@ -113,13 +113,30 @@ router.get('/me', authMiddleware, async (req, res) => {
 
 router.put('/settings', authMiddleware, async (req, res) => {
   try {
-    const { name, company, country, city, address, zip, timezone, notify_replies, can_spam_footer, custom_unsubscribe_text, password } = req.body;
+    const { name, company, country, city, address, zip, timezone, notify_replies, can_spam_footer, custom_unsubscribe_text, notify_email, password } = req.body;
     if (password) {
       const hashed = await bcrypt.hash(password, 10);
       await dbRun('UPDATE users SET password=? WHERE id=?', [hashed, req.userId]);
     }
-    await dbRun('UPDATE users SET name=?,company=?,country=?,city=?,address=?,zip=?,timezone=?,notify_replies=?,can_spam_footer=?,custom_unsubscribe_text=? WHERE id=?',
-      [name, company, country, city, address, zip, timezone, notify_replies ? 1 : 0, can_spam_footer ? 1 : 0, custom_unsubscribe_text || '', req.userId]);
+    // Use COALESCE so fields not sent by the caller (e.g. UserPreferences only sends
+    // notify_replies/can_spam_footer) don't overwrite existing values with NULL,
+    // which would break the NOT NULL constraint on name.
+    await dbRun(`UPDATE users SET
+      name=COALESCE(?,name),
+      company=COALESCE(?,company),
+      country=COALESCE(?,country),
+      city=COALESCE(?,city),
+      address=COALESCE(?,address),
+      zip=COALESCE(?,zip),
+      timezone=COALESCE(?,timezone),
+      notify_replies=?,
+      can_spam_footer=?,
+      custom_unsubscribe_text=?,
+      notify_email=COALESCE(?,notify_email)
+      WHERE id=?`,
+      [name||null, company||null, country||null, city||null, address||null, zip||null, timezone||null,
+       notify_replies ? 1 : 0, can_spam_footer ? 1 : 0, custom_unsubscribe_text ?? '',
+       notify_email||null, req.userId]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
