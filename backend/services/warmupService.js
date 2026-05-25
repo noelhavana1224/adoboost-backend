@@ -30,7 +30,7 @@ function randomItem(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 // the static template pool if OPENAI_API_KEY is missing or the API fails.
 // We use gpt-4o-mini (cheapest, fast) — warmup emails are tiny prompts.
 async function generateAIWarmupContent(fromAccount) {
-  if (!process.env.OPENAI_API_KEY) return null;
+  if (!process.env.GROQ_API_KEY && !process.env.OPENAI_API_KEY) return null;
 
   const product  = (fromAccount.warmup_product  || '').trim();
   const company  = (fromAccount.warmup_company  || fromAccount.from_name || '').trim();
@@ -65,10 +65,25 @@ BODY:
 
   try {
     const { OpenAI } = require('openai');
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    // Auto-detect provider:
+    //   GROQ_API_KEY   → free tier, Llama 3 (recommended for testing)
+    //   OPENAI_API_KEY → paid,      GPT-4o-mini
+    // Set either one in hPanel → Node.js → Environment Variables.
+    let openai, model;
+    if (process.env.GROQ_API_KEY) {
+      openai = new OpenAI({
+        apiKey:  process.env.GROQ_API_KEY,
+        baseURL: 'https://api.groq.com/openai/v1',
+      });
+      model = 'llama-3.1-8b-instant';   // fast + free on Groq
+    } else {
+      openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      model  = 'gpt-4o-mini';
+    }
 
     const resp = await openai.chat.completions.create({
-      model:       'gpt-4o-mini',
+      model,
       messages:    [{ role: 'user', content: prompt }],
       max_tokens:  350,
       temperature: 0.92,   // high variety — every email different
