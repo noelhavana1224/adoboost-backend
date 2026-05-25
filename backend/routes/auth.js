@@ -92,7 +92,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     // Try users table first
-    let user = await dbGet('SELECT id,email,name,role,plan,plan_expires_at,timezone,notify_replies,can_spam_footer,company,country,city,api_key,created_at,last_login FROM users WHERE id=?', [req.userId]);
+    let user = await dbGet('SELECT id,email,name,role,plan,plan_expires_at,timezone,notify_replies,can_spam_footer,custom_unsubscribe_text,company,country,city,api_key,created_at,last_login FROM users WHERE id=?', [req.userId]);
     if (user) return res.json(user);
     // Try team_members table
     const member = await dbGet('SELECT * FROM team_members WHERE id=?', [req.userId]);
@@ -113,13 +113,13 @@ router.get('/me', authMiddleware, async (req, res) => {
 
 router.put('/settings', authMiddleware, async (req, res) => {
   try {
-    const { name, company, country, city, address, zip, timezone, notify_replies, can_spam_footer, password } = req.body;
+    const { name, company, country, city, address, zip, timezone, notify_replies, can_spam_footer, custom_unsubscribe_text, password } = req.body;
     if (password) {
       const hashed = await bcrypt.hash(password, 10);
       await dbRun('UPDATE users SET password=? WHERE id=?', [hashed, req.userId]);
     }
-    await dbRun('UPDATE users SET name=?,company=?,country=?,city=?,address=?,zip=?,timezone=?,notify_replies=?,can_spam_footer=? WHERE id=?',
-      [name, company, country, city, address, zip, timezone, notify_replies ? 1 : 0, can_spam_footer ? 1 : 0, req.userId]);
+    await dbRun('UPDATE users SET name=?,company=?,country=?,city=?,address=?,zip=?,timezone=?,notify_replies=?,can_spam_footer=?,custom_unsubscribe_text=? WHERE id=?',
+      [name, company, country, city, address, zip, timezone, notify_replies ? 1 : 0, can_spam_footer ? 1 : 0, custom_unsubscribe_text || '', req.userId]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

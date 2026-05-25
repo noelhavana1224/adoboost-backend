@@ -232,20 +232,42 @@ function personalize(template, contact, account) {
 }
 
 // ── Build email body with tracking ──────────────
-function buildBody(html, sendId, trackClicks, trackOpens, canSpamFooter) {
+// contactData is used to personalise the custom unsubscribe footer variables.
+function buildBody(html, sendId, trackClicks, trackOpens, canSpamFooter, customUnsubText, contactData = {}) {
   let body = html;
+  const unsubUrl = `${BASE_URL()}/api/tracking/unsubscribe/${sendId}`;
+
   if (trackClicks) {
     body = body.replace(/href="(https?:\/\/[^"]+)"/g, (_, url) =>
       `href="${BASE_URL()}/api/tracking/click/${sendId}?url=${encodeURIComponent(url)}"`);
   }
+
   if (canSpamFooter) {
+    // Full CAN-SPAM compliant footer
     body += `<br><br><div style="font-size:11px;color:#999;border-top:1px solid #eee;padding-top:10px;">
       You received this email as part of a business outreach.
-      <a href="${BASE_URL()}/api/tracking/unsubscribe/${sendId}" style="color:#999;">Unsubscribe</a>
+      <a href="${unsubUrl}" style="color:#999;">Unsubscribe</a>
     </div>`;
+  } else if (customUnsubText && customUnsubText.trim()) {
+    // Custom unsubscribe footer with variable substitution.
+    // Supports {{first_name}}, {{email}}, {{company}}, {{from_name}}, {{from_email}},
+    // and the special {{unsubscribe_url}} token which becomes the tracking URL.
+    const rendered = customUnsubText
+      .replace(/{{unsubscribe_url}}/g, unsubUrl)
+      .replace(/{{first_name}}/g,  contactData.first_name  || '')
+      .replace(/{{last_name}}/g,   contactData.last_name   || '')
+      .replace(/{{full_name}}/g,   [contactData.first_name, contactData.last_name].filter(Boolean).join(' ') || '')
+      .replace(/{{email}}/g,       contactData.email        || '')
+      .replace(/{{company}}/g,     contactData.company      || '')
+      .replace(/{{title}}/g,       contactData.title        || '')
+      .replace(/{{from_name}}/g,   contactData.from_name    || '')
+      .replace(/{{from_email}}/g,  contactData.from_email   || '');
+    body += `<br><br><div style="font-size:11px;color:#999;border-top:1px solid #eee;padding-top:10px;">${rendered}</div>`;
   } else {
-    body += `<br><br><small><a href="${BASE_URL()}/api/tracking/unsubscribe/${sendId}">Unsubscribe</a></small>`;
+    // Bare unsubscribe link (no CAN-SPAM footer, no custom text)
+    body += `<br><br><small><a href="${unsubUrl}">Unsubscribe</a></small>`;
   }
+
   if (trackOpens) {
     body += `<img src="${BASE_URL()}/api/tracking/open/${sendId}" width="1" height="1" style="display:none" />`;
   }
@@ -277,7 +299,7 @@ async function processPendingSends() {
       ea.daily_limit as acc_limit,ea.sent_today,
       ea.emails_per_hour,ea.delay_min,ea.delay_max,
       ea.send_window_start,ea.send_window_end,
-      u.can_spam_footer, u.timezone as user_timezone
+      u.can_spam_footer, u.custom_unsubscribe_text, u.timezone as user_timezone
     FROM sends s
     JOIN contacts c ON s.contact_id=c.id
     JOIN sequences seq ON s.sequence_id=seq.id
@@ -341,7 +363,9 @@ async function processPendingSends() {
       const account   = { from_name: send.from_name, from_email: send.from_email, signature: send.signature };
       const subject   = personalize(send.subject, send, account);
       const rawBody   = personalize(send.body,    send, account);
-      const finalBody = buildBody(rawBody, send.id, send.track_clicks, send.track_opens, send.can_spam_footer);
+      // contactData passed to buildBody so custom unsubscribe footer can use {{email}}, {{first_name}}, etc.
+      const contactData = { ...send, from_name: send.from_name, from_email: send.from_email };
+      const finalBody = buildBody(rawBody, send.id, send.track_clicks, send.track_opens, send.can_spam_footer, send.custom_unsubscribe_text, contactData);
 
       const transporter = nodemailer.createTransport({
         host:   send.host,

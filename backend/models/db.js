@@ -305,6 +305,8 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN warmup_product TEXT DEFAULT ''`,
     `ALTER TABLE email_accounts ADD COLUMN warmup_company TEXT DEFAULT ''`,
     `ALTER TABLE email_accounts ADD COLUMN warmup_industry TEXT DEFAULT ''`,
+    // ── Custom unsubscribe footer (shown when CAN-SPAM footer is off) ──
+    `ALTER TABLE users ADD COLUMN custom_unsubscribe_text TEXT DEFAULT ''`,
   ];
 
   for (const sql of migrations) {
