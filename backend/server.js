@@ -175,6 +175,22 @@ if (warmupService) {
   });
 }
 
+// ── Nightly cleanup — purge soft-deleted messages older than 30 days ────────
+// Soft-deleted rows (deleted=1) are kept for 30 days so the IMAP sync
+// message_id dedup prevents re-importing them. After 30 days the IMAP
+// sync window can never reach that far back, so the rows are safe to purge.
+// Runs at 2:00 AM every night (low-traffic window).
+cron.schedule('0 2 * * *', async () => {
+  try {
+    const { dbRun, dbGet } = require('./models/db');
+    const before = await dbGet(`SELECT COUNT(*) as c FROM messages WHERE deleted=1 AND received_at < datetime('now','-30 days')`);
+    const result = await dbRun(`DELETE FROM messages WHERE deleted=1 AND received_at < datetime('now','-30 days')`);
+    if (result.changes > 0) {
+      console.log(`🧹 Nightly cleanup: purged ${result.changes} soft-deleted message(s) older than 30 days`);
+    }
+  } catch (e) { console.error('Cleanup error:', e.message); }
+});
+
 // ── Start server ───────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`\n🚀 AdoBoost backend running on port ${PORT}`);
