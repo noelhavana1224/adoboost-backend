@@ -339,6 +339,8 @@ function runMigrations() {
     `ALTER TABLE campaigns ADD COLUMN all_hours INTEGER DEFAULT 0`,
     `ALTER TABLE campaigns ADD COLUMN start_immediately INTEGER DEFAULT 0`,
     `ALTER TABLE campaigns ADD COLUMN visibility TEXT DEFAULT 'everyone'`,
+    // ── Soft-delete for messages — keeps message_id in DB so IMAP sync never re-imports deleted emails ──
+    `ALTER TABLE messages ADD COLUMN deleted INTEGER DEFAULT 0`,
   ];
 
   for (const sql of migrations) {

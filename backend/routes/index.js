@@ -685,7 +685,7 @@ messagesRouter.get('/inbox', async (req, res) => {
   try {
     const { search, status, tag, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.is_auto_reply=0','(m.archived=0 OR m.archived IS NULL)']; const params=[req.effectiveUserId];
+    let where=['m.user_id=?','m.is_auto_reply=0','(m.archived=0 OR m.archived IS NULL)','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     if (status) { where.push('m.status=?'); params.push(status); }
     if (tag) { where.push('m.tag=?'); params.push(tag); }
@@ -702,7 +702,7 @@ messagesRouter.get('/auto-replies', async (req, res) => {
   try {
     const { search, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.is_auto_reply=1','(m.archived=0 OR m.archived IS NULL)']; const params=[req.effectiveUserId];
+    let where=['m.user_id=?','m.is_auto_reply=1','(m.archived=0 OR m.archived IS NULL)','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
@@ -716,7 +716,7 @@ messagesRouter.get('/archived', async (req, res) => {
   try {
     const { search, page=1, limit=50 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.archived=1']; const params=[req.effectiveUserId];
+    let where=['m.user_id=?','m.archived=1','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
@@ -762,13 +762,15 @@ messagesRouter.delete('/:id', async (req, res) => {
   try {
     const msg = await dbGet('SELECT * FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!msg) return res.status(404).json({ error: 'Not found' });
-    // Delete all messages in the same thread (same subject base + same from_email)
+    // Soft-delete: mark deleted=1 so the message_id stays in DB.
+    // This prevents IMAP sync from re-importing the same email on the next cycle.
+    // Thread-aware: soft-deletes all messages with the same base subject from the same sender.
     const baseSubject = (msg.subject||'').replace(/^(Re:\s*|Fwd:\s*)+/gi,'').trim();
     if (baseSubject) {
-      await dbRun(`DELETE FROM messages WHERE user_id=? AND (from_email=? OR status='sent') AND (subject LIKE ? OR subject LIKE ? OR subject=?)`,
+      await dbRun(`UPDATE messages SET deleted=1 WHERE user_id=? AND (from_email=? OR status='sent') AND (subject LIKE ? OR subject LIKE ? OR subject=?)`,
         [req.effectiveUserId, msg.from_email, `%${baseSubject}%`, `Re: %${baseSubject}%`, baseSubject]);
     } else {
-      await dbRun('DELETE FROM messages WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+      await dbRun('UPDATE messages SET deleted=1 WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     }
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
