@@ -118,6 +118,55 @@ function teamInviteEmail(inviterName, memberName, email, password, isAdmin = fal
   };
 }
 
+// ── Admin new-user alert ─────────────────────────
+function newUserAlertEmail(name, email, plan, totalUsers) {
+  const now = new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila', dateStyle: 'full', timeStyle: 'short' });
+  return {
+    from: FROM,
+    to: 'noel@adobosolutions.com',
+    subject: `🎉 New AdoBoost signup — ${name}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f8fafc;padding:32px 20px">
+        <div style="background:#0D47A1;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px">
+          <div style="font-family:Georgia,serif;font-size:28px;font-weight:800;color:#fff">ado<span style="color:#FCD116">boost</span></div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:3px;margin-top:4px">BY ADOBO SOLUTIONS</div>
+        </div>
+        <div style="background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
+          <h2 style="color:#1a202c;font-size:22px;margin:0 0 16px">🎉 New user just signed up!</h2>
+          <table style="width:100%;border-collapse:collapse;font-size:14px">
+            <tr style="border-bottom:1px solid #f1f5f9">
+              <td style="padding:10px 0;color:#64748b;width:130px">Name</td>
+              <td style="padding:10px 0;font-weight:700;color:#0f172a">${name}</td>
+            </tr>
+            <tr style="border-bottom:1px solid #f1f5f9">
+              <td style="padding:10px 0;color:#64748b">Email</td>
+              <td style="padding:10px 0;font-weight:700;color:#2563eb"><a href="mailto:${email}" style="color:#2563eb;text-decoration:none">${email}</a></td>
+            </tr>
+            <tr style="border-bottom:1px solid #f1f5f9">
+              <td style="padding:10px 0;color:#64748b">Plan</td>
+              <td style="padding:10px 0"><span style="background:#f0fdf4;color:#16a34a;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700;border:1px solid #86efac">${plan.toUpperCase()}</span></td>
+            </tr>
+            <tr style="border-bottom:1px solid #f1f5f9">
+              <td style="padding:10px 0;color:#64748b">Signed up</td>
+              <td style="padding:10px 0;color:#0f172a">${now} (Manila)</td>
+            </tr>
+            <tr>
+              <td style="padding:10px 0;color:#64748b">Total users</td>
+              <td style="padding:10px 0;font-weight:700;color:#0f172a">${totalUsers}</td>
+            </tr>
+          </table>
+          <div style="margin-top:24px">
+            <a href="https://app.adobosolutions.com/admin/users" style="display:inline-block;background:#0D47A1;color:#fff;padding:11px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:13px">
+              View in Admin Panel →
+            </a>
+          </div>
+        </div>
+        <p style="text-align:center;font-size:11px;color:#a0aec0;margin-top:20px">AdoBoost Admin Alerts · <a href="${BASE_URL()}/admin" style="color:#a0aec0">Admin Panel</a></p>
+      </div>
+    `,
+  };
+}
+
 // ── Send helpers ─────────────────────────────────
 
 async function sendSystemEmail({ to, subject, html, text }) {
@@ -154,4 +203,12 @@ async function sendTeamInviteEmail(inviterName, memberName, email, password, isA
   } catch (e) { console.error(`❌ Invite email failed:`, e.message); }
 }
 
-module.exports = { sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail };
+async function sendNewUserAlert(name, email, plan, totalUsers) {
+  try {
+    const mailer = createSystemMailer();
+    await mailer.sendMail(newUserAlertEmail(name, email, plan, totalUsers));
+    console.log(`✅ New-user alert sent to noel@adobosolutions.com (${email} just signed up)`);
+  } catch (e) { console.error(`❌ New-user alert failed:`, e.message); }
+}
+
+module.exports = { sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail, sendNewUserAlert };
