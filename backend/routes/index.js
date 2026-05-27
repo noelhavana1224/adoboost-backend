@@ -692,8 +692,8 @@ messagesRouter.get('/inbox', async (req, res) => {
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
-    // FIX #7: Return unread count for badge display
-    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND m.status='unread'`, [req.effectiveUserId])).n;
+    // FIX #7: Return unread count for badge display (exclude soft-deleted rows)
+    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND m.status='unread' AND (m.deleted=0 OR m.deleted IS NULL)`, [req.effectiveUserId])).n;
     res.json({ messages, total, page: Number(page), unread });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
