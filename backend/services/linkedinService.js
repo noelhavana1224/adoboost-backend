@@ -1,0 +1,123 @@
+const axios = require('axios');
+const crypto = require('crypto');
+const { dbAll, dbRun } = require('../models/db');
+
+function buildHeaders(liAt, jsessionid) {
+  const csrf = jsessionid.replace(/^["']|["']$/g, '');
+  return {
+    'cookie': `li_at=${liAt}; JSESSIONID="${csrf}"`,
+    'csrf-token': csrf,
+    'x-restli-protocol-version': '2.0.0',
+    'x-li-lang': 'en_US',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'accept': 'application/vnd.linkedin.normalized+json+2.1',
+    'accept-language': 'en-US,en;q=0.9',
+    'referer': 'https://www.linkedin.com/feed/',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+  };
+}
+
+function extractProfileSlug(url) {
+  const m = url.match(/linkedin\.com\/in\/([^/?#\s]+)/);
+  return m ? m[1].replace(/\/+$/, '') : null;
+}
+
+async function testCookies(liAt, jsessionid) {
+  const { data } = await axios.get('https://www.linkedin.com/voyager/api/me', {
+    headers: buildHeaders(liAt, jsessionid),
+    timeout: 12000,
+  });
+  const name = data?.included?.[0]?.firstName?.localized?.en_US || data?.data?.firstName || 'LinkedIn User';
+  return { ok: true, name };
+}
+
+async function sendConnectionRequest(liAt, jsessionid, profileSlug, note) {
+  const trackingId = Buffer.from(crypto.randomBytes(16)).toString('base64');
+  const payload = {
+    trackingId,
+    message: (note || '').slice(0, 300),
+    invitations: [],
+    excludeInvitations: [],
+    invitee: {
+      'com.linkedin.voyager.growth.invitation.InviteeProfile': {
+        profileId: profileSlug,
+      },
+    },
+  };
+
+  await axios.post('https://www.linkedin.com/voyager/api/growth/normInvitations', payload, {
+    headers: { ...buildHeaders(liAt, jsessionid), 'content-type': 'application/json' },
+    timeout: 15000,
+  });
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function personalize(template, contact) {
+  return (template || '')
+    .replace(/\{\{first_name\}\}/g, contact.first_name || '')
+    .replace(/\{\{last_name\}\}/g, contact.last_name || '')
+    .replace(/\{\{company\}\}/g, contact.company || '')
+    .replace(/\{\{full_name\}\}/g, [contact.first_name, contact.last_name].filter(Boolean).join(' ') || '');
+}
+
+async function processPendingLinkedInSends() {
+  const now = new Date().toISOString();
+  const pending = await dbAll(`
+    SELECT ls.*,
+           c.first_name, c.last_name, c.company, c.linkedin,
+           lc.status as campaign_status, lc.connection_note,
+           la.li_at, la.jsessionid, la.daily_limit as acct_daily_limit, la.sent_today
+    FROM linkedin_sends ls
+    JOIN contacts c ON ls.contact_id = c.id
+    JOIN linkedin_campaigns lc ON ls.campaign_id = lc.id
+    JOIN linkedin_accounts la ON ls.linkedin_account_id = la.id
+    WHERE ls.status = 'pending' AND ls.scheduled_at <= ?
+    AND lc.status = 'active'
+    ORDER BY ls.scheduled_at ASC LIMIT 5
+  `, [now]);
+
+  for (const send of pending) {
+    if (send.sent_today >= send.acct_daily_limit) continue;
+
+    const profileUrl = send.linkedin_profile_url || send.linkedin;
+    if (!profileUrl) {
+      await dbRun(`UPDATE linkedin_sends SET status='skipped', error_message='No LinkedIn URL on contact' WHERE id=?`, [send.id]);
+      continue;
+    }
+
+    const slug = extractProfileSlug(profileUrl);
+    if (!slug) {
+      await dbRun(`UPDATE linkedin_sends SET status='skipped', error_message='Invalid LinkedIn URL format' WHERE id=?`, [send.id]);
+      continue;
+    }
+
+    try {
+      const note = personalize(send.connection_note, send);
+      await sendConnectionRequest(send.li_at, send.jsessionid, slug, note);
+      await dbRun(`UPDATE linkedin_sends SET status='sent', sent_at=? WHERE id=?`, [new Date().toISOString(), send.id]);
+      await dbRun(`UPDATE linkedin_accounts SET sent_today = sent_today + 1 WHERE id=?`, [send.linkedin_account_id]);
+
+      // 45–120 second human-like gap
+      const delay = (Math.random() * 75 + 45) * 1000;
+      await sleep(delay);
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message;
+      await dbRun(`UPDATE linkedin_sends SET status='failed', error_message=? WHERE id=?`, [msg, send.id]);
+    }
+  }
+}
+
+async function resetLinkedInDailyCounters() {
+  const today = new Date().toISOString().split('T')[0];
+  await dbRun(
+    `UPDATE linkedin_accounts SET sent_today=0, last_reset=? WHERE last_reset IS NULL OR last_reset < ?`,
+    [today, today]
+  );
+}
+
+module.exports = { testCookies, extractProfileSlug, processPendingLinkedInSends, resetLinkedInDailyCounters };

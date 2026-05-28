@@ -142,6 +142,27 @@ function initSchema() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id))`);
 
+    // LinkedIn Automation
+    db.run(`CREATE TABLE IF NOT EXISTS linkedin_accounts (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      name TEXT NOT NULL, li_at TEXT NOT NULL, jsessionid TEXT NOT NULL,
+      daily_limit INTEGER DEFAULT 20, sent_today INTEGER DEFAULT 0,
+      last_reset DATE, status TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS linkedin_campaigns (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+      status TEXT DEFAULT 'draft', linkedin_account_id TEXT, list_id TEXT,
+      connection_note TEXT DEFAULT '', daily_limit INTEGER DEFAULT 20,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      started_at DATETIME, completed_at DATETIME)`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS linkedin_sends (
+      id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, contact_id TEXT NOT NULL,
+      linkedin_account_id TEXT NOT NULL, linkedin_profile_url TEXT,
+      status TEXT DEFAULT 'pending', scheduled_at DATETIME,
+      sent_at DATETIME, error_message TEXT)`);
+
     // Templates
     db.run(`CREATE TABLE IF NOT EXISTS templates (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL,

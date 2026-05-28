@@ -70,6 +70,7 @@ try { app.use('/api/auth', require('./routes/auth')); } catch (e) { console.erro
 try { app.use('/api/smtp-test', require('./routes/smtptest')); } catch (e) { console.error('[startup] smtptest:', e.message); }
 try { app.use('/api/auth', require('./routes/authSystem')); } catch (e) { console.error('[startup] authSystem:', e.message); }
 try { app.use('/api/ai', require('./routes/ai')); } catch (e) { console.error('[startup] ai routes:', e.message); }
+try { app.use('/api/linkedin', require('./routes/linkedin')); } catch (e) { console.error('[startup] linkedin:', e.message); }
 
 mount('/api/email-accounts', emailAccountsRouter,  'emailAccountsRouter');
 mount('/api/contacts',       contactsRouter,        'contactsRouter');
@@ -146,9 +147,10 @@ function handleWatchdogFail(reason) {
 // Ping every 2 minutes; restart only after 3 consecutive failures (6 min total)
 setInterval(selfPing, 2 * 60 * 1000);
 
-const emailService  = safeRequire('./services/emailService');
-const imapService   = safeRequire('./services/imapService');
-const warmupService = safeRequire('./services/warmupService');
+const emailService    = safeRequire('./services/emailService');
+const imapService     = safeRequire('./services/imapService');
+const warmupService   = safeRequire('./services/warmupService');
+const linkedinService = safeRequire('./services/linkedinService');
 
 if (emailService) {
   cron.schedule('*/2 * * * *', async () => {
@@ -172,6 +174,17 @@ if (warmupService) {
   cron.schedule('*/30 * * * *', async () => {
     try { await warmupService.processWarmup(); }
     catch (e) { console.error('Warmup error:', e.message); }
+  });
+}
+
+if (linkedinService) {
+  cron.schedule('*/3 * * * *', async () => {
+    try { await linkedinService.processPendingLinkedInSends(); }
+    catch (e) { console.error('LinkedIn send error:', e.message); }
+  });
+  cron.schedule('0 0 * * *', async () => {
+    try { await linkedinService.resetLinkedInDailyCounters(); }
+    catch (e) { console.error('LinkedIn counter reset error:', e.message); }
   });
 }
 
