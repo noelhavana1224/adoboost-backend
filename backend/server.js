@@ -90,6 +90,10 @@ mount('/api',                vaUpsellRouter,        'vaUpsellRouter');
 mount('/api/usage',          usageRouter,           'usageRouter');
 mount('/api/internal',       internalRouter,        'internalRouter');
 
+// ── Booking Calendar ──────────────────────────────────────────────────────
+try { app.use('/api/booking-calendar', require('./routes/bookingCalendar')); } catch (e) { console.error('[startup] bookingCalendar:', e.message); }
+try { app.use('/api/public',           require('./routes/bookingPublic'));    } catch (e) { console.error('[startup] bookingPublic:',   e.message); }
+
 // ── Global error handler — catches any unhandled error in a route ──────────
 // Returns JSON instead of crashing (Passenger would restart on crash anyway,
 // but this keeps the current request clean).

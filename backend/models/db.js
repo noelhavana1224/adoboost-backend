@@ -251,6 +251,47 @@ function initSchema() {
       expires_at DATETIME, amount_paid REAL DEFAULT 0,
       notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
+    // Booking Calendars
+    db.run(`CREATE TABLE IF NOT EXISTS booking_calendars (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      slug TEXT UNIQUE NOT NULL,
+      description TEXT DEFAULT '',
+      duration INTEGER DEFAULT 30,
+      buffer_time INTEGER DEFAULT 0,
+      timezone TEXT DEFAULT 'UTC',
+      location_type TEXT DEFAULT 'custom',
+      location_url TEXT DEFAULT '',
+      forward_email TEXT DEFAULT '',
+      custom_questions TEXT DEFAULT '[]',
+      availability TEXT DEFAULT '{"mon":{"enabled":true,"start":"09:00","end":"17:00"},"tue":{"enabled":true,"start":"09:00","end":"17:00"},"wed":{"enabled":true,"start":"09:00","end":"17:00"},"thu":{"enabled":true,"start":"09:00","end":"17:00"},"fri":{"enabled":true,"start":"09:00","end":"17:00"},"sat":{"enabled":false,"start":"09:00","end":"17:00"},"sun":{"enabled":false,"start":"09:00","end":"17:00"}}',
+      is_active INTEGER DEFAULT 1,
+      accent_color TEXT DEFAULT '#1d4ed8',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id))`);
+
+    // Bookings (from public booking pages)
+    db.run(`CREATE TABLE IF NOT EXISTS bookings (
+      id TEXT PRIMARY KEY,
+      calendar_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      contact_id TEXT,
+      booker_name TEXT NOT NULL,
+      booker_email TEXT NOT NULL,
+      booker_phone TEXT DEFAULT '',
+      start_time TEXT NOT NULL,
+      end_time TEXT NOT NULL,
+      timezone TEXT DEFAULT 'UTC',
+      status TEXT DEFAULT 'confirmed',
+      custom_answers TEXT DEFAULT '{}',
+      notes TEXT DEFAULT '',
+      meeting_link TEXT DEFAULT '',
+      cancellation_reason TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (calendar_id) REFERENCES booking_calendars(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id))`);
+
     // ── Seed plans (INSERT OR IGNORE = first-run only) ──────────────────────
     db.run(`INSERT OR IGNORE INTO plans (id,name,price_monthly,max_contacts,max_campaigns,max_emails_per_day,max_email_accounts,features)
       VALUES ('plan_trial','Trial',0,200,2,50,1,'[]')`);
