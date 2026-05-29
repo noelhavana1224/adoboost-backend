@@ -50,6 +50,10 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 
+// ── Serve uploaded logos (booking calendar branding) ──────────────────────
+const DATA_DIR_STATIC = process.env.DATA_DIR || '/home/u346663333/adoboost-data';
+app.use('/uploads', require('express').static(require('path').join(DATA_DIR_STATIC, 'uploads')));
+
 // ── Health check — FIRST, always responds regardless of DB / route state ──
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',

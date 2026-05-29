@@ -1,9 +1,33 @@
-const express = require('express');
+const express  = require('express');
+const multer   = require('multer');
+const path     = require('path');
+const fs       = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { dbGet, dbAll, dbRun } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
+
+// ── Logo upload setup ─────────────────────────────────────────────────────
+const LOGO_DIR = path.join(process.env.DATA_DIR || '/home/u346663333/adoboost-data', 'uploads', 'logos');
+const logoStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    if (!fs.existsSync(LOGO_DIR)) fs.mkdirSync(LOGO_DIR, { recursive: true });
+    cb(null, LOGO_DIR);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.png';
+    cb(null, `logo_${req.userId}_${Date.now()}${ext}`);
+  },
+});
+const logoUpload = multer({
+  storage: logoStorage,
+  limits: { fileSize: 3 * 1024 * 1024 }, // 3 MB max
+  fileFilter: (req, file, cb) => {
+    const ok = ['image/jpeg','image/png','image/gif','image/webp','image/svg+xml'].includes(file.mimetype);
+    cb(null, ok);
+  },
+});
 
 const DEFAULT_AVAILABILITY = {
   mon: { enabled: true, start: '09:00', end: '17:00' },
@@ -67,6 +91,14 @@ router.delete('/bookings/:bookingId', async (req, res) => {
     await dbRun("UPDATE bookings SET status='cancelled' WHERE id=?", [req.params.bookingId]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Upload logo image ─────────────────────────────────────────────────────
+router.post('/upload-logo', logoUpload.single('logo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file or unsupported format (jpg/png/gif/webp/svg only, max 3 MB)' });
+  const apiBase = process.env.API_URL || 'https://api.adobosolutions.com';
+  const url = `${apiBase}/uploads/logos/${req.file.filename}`;
+  res.json({ url });
 });
 
 // ── Test custom SMTP ─────────────────────────────────────────────────────
