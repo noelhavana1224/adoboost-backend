@@ -403,6 +403,15 @@ function runMigrations() {
     `ALTER TABLE campaigns ADD COLUMN visibility TEXT DEFAULT 'everyone'`,
     // ── Soft-delete for messages — keeps message_id in DB so IMAP sync never re-imports deleted emails ──
     `ALTER TABLE messages ADD COLUMN deleted INTEGER DEFAULT 0`,
+    // ── Booking calendar branding + custom SMTP ──
+    `ALTER TABLE booking_calendars ADD COLUMN logo_url TEXT DEFAULT ''`,
+    `ALTER TABLE booking_calendars ADD COLUMN smtp_host TEXT DEFAULT ''`,
+    `ALTER TABLE booking_calendars ADD COLUMN smtp_port INTEGER DEFAULT 587`,
+    `ALTER TABLE booking_calendars ADD COLUMN smtp_user TEXT DEFAULT ''`,
+    `ALTER TABLE booking_calendars ADD COLUMN smtp_pass TEXT DEFAULT ''`,
+    `ALTER TABLE booking_calendars ADD COLUMN smtp_from_name TEXT DEFAULT ''`,
+    `ALTER TABLE booking_calendars ADD COLUMN smtp_from_email TEXT DEFAULT ''`,
+    `ALTER TABLE booking_calendars ADD COLUMN smtp_secure INTEGER DEFAULT 0`,
   ];
 
   for (const sql of migrations) {

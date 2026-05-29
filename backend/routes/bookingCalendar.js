@@ -69,27 +69,49 @@ router.delete('/bookings/:bookingId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Test custom SMTP ─────────────────────────────────────────────────────
+router.post('/test-smtp', async (req, res) => {
+  try {
+    const nodemailer = require('nodemailer');
+    const { smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from_email, smtp_from_name, smtp_secure } = req.body;
+    if (!smtp_host || !smtp_user || !smtp_pass) return res.status(400).json({ error: 'Host, username and password required' });
+
+    const transporter = nodemailer.createTransport({
+      host: smtp_host, port: smtp_port || 587,
+      secure: !!smtp_secure,
+      auth: { user: smtp_user, pass: smtp_pass },
+      tls: { rejectUnauthorized: false },
+    });
+
+    await transporter.verify();
+    res.json({ success: true, message: 'SMTP connection successful!' });
+  } catch (err) { res.status(400).json({ error: 'SMTP test failed: ' + err.message }); }
+});
+
 // ── Create calendar ───────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { name, description, duration, buffer_time, timezone, location_type, location_url, forward_email, custom_questions, availability, accent_color } = req.body;
+    const { name, description, duration, buffer_time, timezone, location_type, location_url, forward_email,
+            custom_questions, availability, accent_color,
+            logo_url, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from_name, smtp_from_email, smtp_secure } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
 
-    // Generate unique slug
     const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'booking';
     const suffix = Math.random().toString(36).substring(2, 7);
     const slug = `${base}-${suffix}`;
 
     const id = uuidv4();
     await dbRun(
-      `INSERT INTO booking_calendars (id, user_id, name, slug, description, duration, buffer_time, timezone, location_type, location_url, forward_email, custom_questions, availability, accent_color)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO booking_calendars (id, user_id, name, slug, description, duration, buffer_time, timezone, location_type, location_url, forward_email, custom_questions, availability, accent_color, logo_url, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from_name, smtp_from_email, smtp_secure)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, req.userId, name, slug,
        description || '', duration || 30, buffer_time || 0, timezone || 'UTC',
        location_type || 'custom', location_url || '', forward_email || '',
        JSON.stringify(custom_questions || []),
        JSON.stringify(availability || DEFAULT_AVAILABILITY),
-       accent_color || '#1d4ed8']
+       accent_color || '#1d4ed8',
+       logo_url || '', smtp_host || '', smtp_port || 587, smtp_user || '', smtp_pass || '',
+       smtp_from_name || '', smtp_from_email || '', smtp_secure ? 1 : 0]
     );
 
     const cal = await dbGet('SELECT * FROM booking_calendars WHERE id=?', [id]);
@@ -103,16 +125,20 @@ router.put('/:id', async (req, res) => {
     const cal = await dbGet('SELECT id FROM booking_calendars WHERE id=? AND user_id=?', [req.params.id, req.userId]);
     if (!cal) return res.status(404).json({ error: 'Not found' });
 
-    const { name, description, duration, buffer_time, timezone, location_type, location_url, forward_email, custom_questions, availability, accent_color, is_active } = req.body;
+    const { name, description, duration, buffer_time, timezone, location_type, location_url, forward_email,
+            custom_questions, availability, accent_color, is_active,
+            logo_url, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from_name, smtp_from_email, smtp_secure } = req.body;
 
     await dbRun(
-      `UPDATE booking_calendars SET name=?, description=?, duration=?, buffer_time=?, timezone=?, location_type=?, location_url=?, forward_email=?, custom_questions=?, availability=?, accent_color=?, is_active=? WHERE id=?`,
+      `UPDATE booking_calendars SET name=?, description=?, duration=?, buffer_time=?, timezone=?, location_type=?, location_url=?, forward_email=?, custom_questions=?, availability=?, accent_color=?, is_active=?, logo_url=?, smtp_host=?, smtp_port=?, smtp_user=?, smtp_pass=?, smtp_from_name=?, smtp_from_email=?, smtp_secure=? WHERE id=?`,
       [name, description || '', duration || 30, buffer_time || 0, timezone || 'UTC',
        location_type || 'custom', location_url || '', forward_email || '',
        JSON.stringify(custom_questions || []),
        JSON.stringify(availability || DEFAULT_AVAILABILITY),
        accent_color || '#1d4ed8',
        is_active !== undefined ? (is_active ? 1 : 0) : 1,
+       logo_url || '', smtp_host || '', smtp_port || 587, smtp_user || '', smtp_pass || '',
+       smtp_from_name || '', smtp_from_email || '', smtp_secure ? 1 : 0,
        req.params.id]
     );
 

@@ -129,11 +129,40 @@ router.post('/book/:slug', async (req, res) => {
     setImmediate(async () => {
       try {
         const { sendBookingConfirmation, sendBookingAlert } = require('../services/emailSystem');
-        const hostUser = await dbGet('SELECT name, email FROM users WHERE id=?', [cal.user_id]);
+        const nodemailer = require('nodemailer');
+        const hostUser = await dbGet('SELECT name FROM users WHERE id=?', [cal.user_id]);
+
+        // Build custom mailer if client configured their own SMTP
+        let customMailer = null;
+        let fromName  = '';
+        let fromEmail = '';
+        if (cal.smtp_host && cal.smtp_user && cal.smtp_pass) {
+          try {
+            customMailer = nodemailer.createTransport({
+              host: cal.smtp_host,
+              port: cal.smtp_port || 587,
+              secure: !!cal.smtp_secure,
+              auth: { user: cal.smtp_user, pass: cal.smtp_pass },
+              tls: { rejectUnauthorized: false },
+            });
+            fromName  = cal.smtp_from_name  || hostUser?.name || '';
+            fromEmail = cal.smtp_from_email || cal.smtp_user;
+          } catch (e) {
+            console.error('[booking] Custom SMTP setup failed:', e.message);
+            customMailer = null;
+          }
+        }
+
+        const brandingOpts = {
+          customMailer,
+          fromName:  fromName  || hostUser?.name || '',
+          fromEmail: fromEmail || '',
+          logoUrl:   cal.logo_url || '',
+        };
 
         await sendBookingConfirmation(
           name, email, cal.name, hostUser?.name || '',
-          startDT, endDT, cal.timezone || 'UTC', cal.location_url, cal.location_type, id
+          startDT, endDT, cal.timezone || 'UTC', cal.location_url, cal.location_type, id, brandingOpts
         ).catch(() => {});
 
         if (cal.forward_email) {
@@ -141,7 +170,7 @@ router.post('/book/:slug', async (req, res) => {
             cal.forward_email, hostUser?.name || '', name, email, phone,
             cal.name, startDT, endDT, cal.timezone || 'UTC',
             cal.location_url, cal.location_type,
-            answers || {}, safeJson(cal.custom_questions, []), id
+            answers || {}, safeJson(cal.custom_questions, []), id, brandingOpts
           ).catch(() => {});
         }
       } catch (e) { console.error('[booking] notification error:', e.message); }

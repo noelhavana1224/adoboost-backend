@@ -240,10 +240,28 @@ function generateICS({ id, summary, description, location, startDT, endDT, organ
   ].filter(Boolean).join('\r\n');
 }
 
+// ── Build branded email header ────────────────────────────────────────────
+function brandedHeader(logoUrl, fromName) {
+  if (logoUrl) {
+    return `<div style="background:#fff;border-radius:12px;padding:20px 28px;text-align:center;margin-bottom:24px;border:1px solid #e2e8f0">
+      <img src="${logoUrl}" alt="${fromName}" style="max-height:64px;max-width:220px;object-fit:contain;" />
+    </div>`;
+  }
+  return `<div style="background:#0D47A1;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px">
+    <div style="font-family:Georgia,serif;font-size:28px;font-weight:800;color:#fff">ado<span style="color:#FCD116">boost</span></div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:3px;margin-top:4px">BOOKING CONFIRMED</div>
+  </div>`;
+}
+
 // ── Booking confirmation — sent to the person who booked ─────────────────
-async function sendBookingConfirmation(bookerName, bookerEmail, calendarName, hostName, startDT, endDT, timezone, meetingLink, locationType, bookingId) {
+async function sendBookingConfirmation(bookerName, bookerEmail, calendarName, hostName, startDT, endDT, timezone, meetingLink, locationType, bookingId, branding = {}) {
   try {
-    const mailer = createSystemMailer();
+    const { customMailer, fromName, fromEmail, logoUrl } = branding;
+    const mailer = customMailer || createSystemMailer();
+    const senderName  = fromName  || hostName || 'AdoBoost';
+    const senderEmail = fromEmail || 'noreply@adobosolutions.com';
+    const fromHeader  = `"${senderName}" <${senderEmail}>`;
+
     const fmtTime = (dt) => {
       try { return new Date(dt).toLocaleString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:true }); }
       catch { return dt; }
@@ -259,22 +277,19 @@ async function sendBookingConfirmation(bookerName, bookerEmail, calendarName, ho
       description: `Your meeting with ${hostName} is confirmed.\nDate: ${fmtTime(startDT)}\nTimezone: ${timezone}`,
       location: meetingLink || '',
       startDT, endDT,
-      organizerName: hostName,
-      organizerEmail: 'noreply@adobosolutions.com',
+      organizerName: senderName,
+      organizerEmail: senderEmail,
       attendeeName: bookerName,
       attendeeEmail: bookerEmail,
     });
 
     await mailer.sendMail({
-      from: FROM,
+      from: fromHeader,
       to: bookerEmail,
       subject: `✅ Meeting confirmed: ${calendarName}`,
       html: `
         <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f8fafc;padding:32px 20px">
-          <div style="background:#0D47A1;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px">
-            <div style="font-family:Georgia,serif;font-size:28px;font-weight:800;color:#fff">ado<span style="color:#FCD116">boost</span></div>
-            <div style="font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:3px;margin-top:4px">BOOKING CONFIRMED</div>
-          </div>
+          ${brandedHeader(logoUrl, senderName)}
           <div style="background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
             <div style="text-align:center;margin-bottom:20px">
               <div style="font-size:48px">✅</div>
@@ -290,23 +305,23 @@ async function sendBookingConfirmation(bookerName, bookerEmail, calendarName, ho
             </div>
             <p style="color:#4a5568;font-size:13px;line-height:1.6;margin:0">A calendar invite is attached to this email. Add it to your calendar to get a reminder.</p>
           </div>
-          <p style="text-align:center;font-size:11px;color:#a0aec0;margin-top:20px">Powered by AdoBoost · <a href="${BASE_URL()}" style="color:#a0aec0">adobosolutions.com</a></p>
+          <p style="text-align:center;font-size:11px;color:#a0aec0;margin-top:20px">${logoUrl ? '' : 'Powered by AdoBoost · <a href="' + BASE_URL() + '" style="color:#a0aec0">adobosolutions.com</a>'}</p>
         </div>
       `,
-      attachments: [{
-        filename: 'meeting.ics',
-        content: icsContent,
-        contentType: 'text/calendar; charset=utf-8; method=REQUEST',
-      }],
+      attachments: [{ filename: 'meeting.ics', content: icsContent, contentType: 'text/calendar; charset=utf-8; method=REQUEST' }],
     });
     console.log(`✅ Booking confirmation sent to ${bookerEmail}`);
   } catch (e) { console.error(`❌ Booking confirmation failed:`, e.message); throw e; }
 }
 
 // ── Booking alert — sent to the host's forward email ─────────────────────
-async function sendBookingAlert(forwardEmail, hostName, bookerName, bookerEmail, bookerPhone, calendarName, startDT, endDT, timezone, meetingLink, locationType, answers, customQuestions, bookingId) {
+async function sendBookingAlert(forwardEmail, hostName, bookerName, bookerEmail, bookerPhone, calendarName, startDT, endDT, timezone, meetingLink, locationType, answers, customQuestions, bookingId, branding = {}) {
   try {
-    const mailer = createSystemMailer();
+    const { customMailer, fromName, fromEmail, logoUrl } = branding;
+    const mailer = customMailer || createSystemMailer();
+    const senderName  = fromName  || hostName || 'AdoBoost';
+    const senderEmail = fromEmail || 'noreply@adobosolutions.com';
+    const fromHeader  = `"${senderName}" <${senderEmail}>`;
     const fmtTime = (dt) => {
       try { return new Date(dt).toLocaleString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:true }); }
       catch { return dt; }
@@ -325,22 +340,19 @@ async function sendBookingAlert(forwardEmail, hostName, bookerName, bookerEmail,
       description: `${bookerName} (${bookerEmail}${bookerPhone ? ', ' + bookerPhone : ''}) booked ${calendarName}`,
       location: meetingLink || '',
       startDT, endDT,
-      organizerName: hostName,
-      organizerEmail: forwardEmail,
+      organizerName: senderName,
+      organizerEmail: senderEmail,
       attendeeName: bookerName,
       attendeeEmail: bookerEmail,
     });
 
     await mailer.sendMail({
-      from: FROM,
+      from: fromHeader,
       to: forwardEmail,
       subject: `📅 New booking: ${bookerName} booked "${calendarName}"`,
       html: `
         <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f8fafc;padding:32px 20px">
-          <div style="background:#0D47A1;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px">
-            <div style="font-family:Georgia,serif;font-size:28px;font-weight:800;color:#fff">ado<span style="color:#FCD116">boost</span></div>
-            <div style="font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:3px;margin-top:4px">NEW BOOKING</div>
-          </div>
+          ${brandedHeader(logoUrl, senderName)}
           <div style="background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
             <h2 style="color:#1a202c;font-size:20px;margin:0 0 4px">📅 New meeting booked!</h2>
             <p style="color:#718096;margin:0 0 20px">${bookerName} just booked <strong>${calendarName}</strong></p>
