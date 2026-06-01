@@ -230,6 +230,15 @@ emailAccountsRouter.get('/bulk-retry-status/:jobId', (req, res) => {
   res.json(job);
 });
 
+// ── Password status — tells UI if a password is stored (without exposing it) ─
+emailAccountsRouter.get('/:id/password-status', async (req, res) => {
+  try {
+    const acc = await dbGet('SELECT id, password FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!acc) return res.status(404).json({ error: 'Not found' });
+    res.json({ has_password: !!(acc.password && acc.password.trim()), length: acc.password ? acc.password.length : 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Check which usernames already exist (used by preview step) ────────────
 emailAccountsRouter.post('/check-existing', async (req, res) => {
   try {
@@ -287,19 +296,21 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
       const name      = get('name') || get('accountname') || fromEmail;
       const dailyLim  = parseInt(get('dailylimit') || get('limit')) || 50;
 
-      if (!username || !password || !host) {
-        errors.push({ row: i + 2, email: username || '(empty)', reason: 'Missing required: username, password, host' });
+      if (!username || !host) {
+        errors.push({ row: i + 2, email: username || '(empty)', reason: 'Missing required: username, host' });
         continue;
       }
 
       try {
         const existing = await dbGet(
-          'SELECT id FROM email_accounts WHERE LOWER(username)=? AND user_id=?',
+          'SELECT id, password FROM email_accounts WHERE LOWER(username)=? AND user_id=?',
           [username.toLowerCase(), req.effectiveUserId]
         );
 
         if (existing) {
-          // ── UPDATE existing account (password + settings from CSV) ──────
+          // ── UPDATE existing account ──────────────────────────────────────
+          // Only update password from CSV if one is provided — never erase saved password
+          const newPass = password || existing.password;
           await dbRun(
             `UPDATE email_accounts SET
                password=?, host=?, port=?, secure=?,
@@ -307,12 +318,16 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
                imap_host=?, imap_port=?, imap_secure=?,
                name=COALESCE(NULLIF(?,''),name)
              WHERE id=?`,
-            [password, host, port, secure, fromName, fromEmail, dailyLim,
+            [newPass, host, port, secure, fromName, fromEmail, dailyLim,
              imapHost, imapPort, imapSec, name, existing.id]
           );
           updated++;
         } else {
-          // ── INSERT new account ──────────────────────────────────────────
+          // ── INSERT new account — password required ──────────────────────
+          if (!password) {
+            errors.push({ row: i + 2, email: username, reason: 'Password required for new accounts' });
+            continue;
+          }
           const id = uuidv4();
           await dbRun(
             `INSERT INTO email_accounts
