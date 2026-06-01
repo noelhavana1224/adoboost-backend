@@ -358,6 +358,45 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
   }
 });
 
+// ── Fix names from email — derives display name from each account's email ──
+// e.g. jalcaraz@domain.com → "Jalcaraz", j.alcaraz@domain.com → "J Alcaraz"
+emailAccountsRouter.post('/fix-names-from-email', async (req, res) => {
+  try {
+    const { account_ids } = req.body; // optional — if not provided, fix ALL
+    let accounts;
+    if (Array.isArray(account_ids) && account_ids.length) {
+      const placeholders = account_ids.map(() => '?').join(',');
+      accounts = await dbAll(
+        `SELECT id, username, from_email FROM email_accounts WHERE user_id=? AND id IN (${placeholders})`,
+        [req.effectiveUserId, ...account_ids]
+      );
+    } else {
+      accounts = await dbAll(
+        'SELECT id, username, from_email FROM email_accounts WHERE user_id=?',
+        [req.effectiveUserId]
+      );
+    }
+
+    let fixed = 0;
+    for (const acc of accounts) {
+      const email = acc.username || acc.from_email || '';
+      const localPart = (email.split('@')[0] || '')
+        .replace(/[._-]+/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase())
+        .trim();
+      if (!localPart) continue;
+      await dbRun(
+        'UPDATE email_accounts SET name=?, from_name=? WHERE id=?',
+        [localPart, localPart, acc.id]
+      );
+      fixed++;
+    }
+    res.json({ success: true, fixed });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 emailAccountsRouter.delete('/:id', async (req, res) => {
   try {
     const r = await dbRun('DELETE FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
