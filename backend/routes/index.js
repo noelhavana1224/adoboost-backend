@@ -304,36 +304,46 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
       const name      = csvName || emailLocalPart || fromEmail;
       const fromName  = get('fromname') || get('from_name') || csvName || emailLocalPart || username;
 
-      if (!username || !host) {
-        errors.push({ row: i + 2, email: username || '(empty)', reason: 'Missing required: username, host' });
+      if (!username) {
+        errors.push({ row: i + 2, email: '(empty)', reason: 'Missing required: username/email' });
         continue;
       }
 
       try {
         const existing = await dbGet(
-          'SELECT id, password FROM email_accounts WHERE LOWER(username)=? AND user_id=?',
+          'SELECT * FROM email_accounts WHERE LOWER(username)=? AND user_id=?',
           [username.toLowerCase(), req.effectiveUserId]
         );
 
         if (existing) {
           // ── UPDATE existing account ──────────────────────────────────────
-          // Always update name + from_name so a re-upload fixes mismatched names.
-          // Only update password if one is provided — never erase a saved password.
-          const newPass = password || existing.password;
+          // For updates: host/password are optional — keep saved values if not in CSV.
+          // Only fields explicitly provided in the CSV will overwrite existing values.
+          // This allows a simple CSV with just (username, name) to fix names only.
+          const newPass     = password              || existing.password;
+          const newHost     = host                  || existing.host;
+          const newPort     = host ? port           : existing.port;
+          const newSecure   = host ? secure         : existing.secure;
+          const newFromEmail = fromEmail !== username ? fromEmail : (existing.from_email || fromEmail);
+          const newDailyLim = get('dailylimit') || get('limit') ? dailyLim : existing.daily_limit;
+          const newImapHost  = imapHost || existing.imap_host || '';
+          const newImapPort  = imapHost ? imapPort : (existing.imap_port || 993);
+          const newImapSec   = imapHost ? imapSec  : (existing.imap_secure ?? 1);
           await dbRun(
             `UPDATE email_accounts SET
                name=?, password=?, host=?, port=?, secure=?,
                from_name=?, from_email=?, daily_limit=?,
                imap_host=?, imap_port=?, imap_secure=?
              WHERE id=?`,
-            [name, newPass, host, port, secure, fromName, fromEmail, dailyLim,
-             imapHost, imapPort, imapSec, existing.id]
+            [name, newPass, newHost, newPort, newSecure,
+             fromName, newFromEmail, newDailyLim,
+             newImapHost, newImapPort, newImapSec, existing.id]
           );
           updated++;
         } else {
-          // ── INSERT new account — password required ──────────────────────
-          if (!password) {
-            errors.push({ row: i + 2, email: username, reason: 'Password required for new accounts' });
+          // ── INSERT new account — host + password required ───────────────
+          if (!host || !password) {
+            errors.push({ row: i + 2, email: username, reason: 'New account requires: host and password' });
             continue;
           }
           const id = uuidv4();
