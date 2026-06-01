@@ -291,10 +291,18 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
       const imapPort  = parseInt(imapPortR) || 993;
       const imapSecR  = get('imapsecure') || get('popsecure') || '1';
       const imapSec   = ['0','false','no'].includes(imapSecR.toLowerCase()) ? 0 : 1;
-      const fromName  = get('fromname') || get('name') || username;
       const fromEmail = get('fromemail') || username;
-      const name      = get('name') || get('accountname') || fromEmail;
       const dailyLim  = parseInt(get('dailylimit') || get('limit')) || 50;
+
+      // Derive a clean display name from the email local part when no name column
+      // e.g. jnavarro@domain.com → "Jnavarro", j.navarro@domain.com → "J Navarro"
+      const emailLocalPart = (username.split('@')[0] || '')
+        .replace(/[._-]+/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase())
+        .trim();
+      const csvName   = get('name') || get('accountname') || get('fullname') || get('display_name') || '';
+      const name      = csvName || emailLocalPart || fromEmail;
+      const fromName  = get('fromname') || get('from_name') || csvName || emailLocalPart || username;
 
       if (!username || !host) {
         errors.push({ row: i + 2, email: username || '(empty)', reason: 'Missing required: username, host' });
@@ -309,17 +317,17 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
 
         if (existing) {
           // ── UPDATE existing account ──────────────────────────────────────
-          // Only update password from CSV if one is provided — never erase saved password
+          // Always update name + from_name so a re-upload fixes mismatched names.
+          // Only update password if one is provided — never erase a saved password.
           const newPass = password || existing.password;
           await dbRun(
             `UPDATE email_accounts SET
-               password=?, host=?, port=?, secure=?,
+               name=?, password=?, host=?, port=?, secure=?,
                from_name=?, from_email=?, daily_limit=?,
-               imap_host=?, imap_port=?, imap_secure=?,
-               name=COALESCE(NULLIF(?,''),name)
+               imap_host=?, imap_port=?, imap_secure=?
              WHERE id=?`,
-            [newPass, host, port, secure, fromName, fromEmail, dailyLim,
-             imapHost, imapPort, imapSec, name, existing.id]
+            [name, newPass, host, port, secure, fromName, fromEmail, dailyLim,
+             imapHost, imapPort, imapSec, existing.id]
           );
           updated++;
         } else {
