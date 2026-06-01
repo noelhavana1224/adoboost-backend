@@ -50,6 +50,10 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 
+// ── Serve uploaded logos (booking calendar branding) ──────────────────────
+const DATA_DIR_STATIC = process.env.DATA_DIR || '/home/u346663333/adoboost-data';
+app.use('/uploads', require('express').static(require('path').join(DATA_DIR_STATIC, 'uploads')));
+
 // ── Health check — FIRST, always responds regardless of DB / route state ──
 app.get('/api/health', (req, res) => res.json({
   status: 'ok',
@@ -89,6 +93,10 @@ mount('/api/admin/support',  supportRouter,         'supportRouter');
 mount('/api',                vaUpsellRouter,        'vaUpsellRouter');
 mount('/api/usage',          usageRouter,           'usageRouter');
 mount('/api/internal',       internalRouter,        'internalRouter');
+
+// ── Booking Calendar ──────────────────────────────────────────────────────
+try { app.use('/api/booking-calendar', require('./routes/bookingCalendar')); } catch (e) { console.error('[startup] bookingCalendar:', e.message); }
+try { app.use('/api/public',           require('./routes/bookingPublic'));    } catch (e) { console.error('[startup] bookingPublic:',   e.message); }
 
 // ── Global error handler — catches any unhandled error in a route ──────────
 // Returns JSON instead of crashing (Passenger would restart on crash anyway,

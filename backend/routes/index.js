@@ -132,14 +132,140 @@ emailAccountsRouter.post('/:id/test', async (req, res) => {
   }
 });
 
-// ── Bulk Import ─────────────────────────────────
+// ── Retry SMTP with stored credentials (no re-entry needed) ─────────────
+// Tests stored creds and clears today's failed warmup logs on success so
+// the error banner disappears immediately on refresh.
+emailAccountsRouter.post('/:id/retry-smtp', async (req, res) => {
+  try {
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!acc) return res.status(404).json({ error: 'Not found' });
+    const t = nodemailer.createTransport({
+      host: acc.host, port: acc.port,
+      secure: acc.secure === 1 || acc.port === 465,
+      auth: { user: acc.username, pass: acc.password },
+      tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 15000,
+    });
+    await t.verify();
+    // Clear today's failed warmup logs so the error banner disappears on refresh
+    const today = new Date().toISOString().split('T')[0];
+    await dbRun(
+      `UPDATE warmup_logs SET status='cleared' WHERE account_id=? AND direction='sent' AND status='failed' AND DATE(created_at)=?`,
+      [acc.id, today]
+    );
+    res.json({ success: true, message: 'Connection verified — warmup will resume on the next run.' });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// ── Bulk retry SMTP — returns IMMEDIATELY, processes in background ─────────
+// Testing 60+ SMTP connections sequentially takes minutes and times out.
+// Instead: respond at once, run tests concurrently in background (batches of 8,
+// 5s timeout each). Client polls /bulk-retry-status/:jobId for the result.
+const _retryJobs = {}; // in-memory job store (survives only current process)
+
+emailAccountsRouter.post('/bulk-retry-smtp', async (req, res) => {
+  try {
+    const { account_ids } = req.body;
+    if (!Array.isArray(account_ids) || !account_ids.length)
+      return res.status(400).json({ error: 'account_ids required' });
+
+    const jobId = require('crypto').randomBytes(8).toString('hex');
+    _retryJobs[jobId] = { status: 'running', total: account_ids.length, done: 0, ok: 0, fail: 0, results: [] };
+
+    // ── Respond IMMEDIATELY so the client doesn't time out ──
+    res.json({ jobId, total: account_ids.length, background: true });
+
+    // ── Process concurrently in background ──────────────────
+    const today = new Date().toISOString().split('T')[0];
+    const userId = req.effectiveUserId;
+    const BATCH = 8; // test 8 at a time
+
+    const testOne = async (id) => {
+      try {
+        const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [id, userId]);
+        if (!acc) { _retryJobs[jobId].fail++; return { id, success: false, error: 'Not found' }; }
+        const t = nodemailer.createTransport({
+          host: acc.host, port: acc.port,
+          secure: acc.secure === 1 || acc.port === 465,
+          auth: { user: acc.username, pass: acc.password },
+          tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
+          connectionTimeout: 5000, greetingTimeout: 5000, socketTimeout: 5000,
+        });
+        await t.verify();
+        await dbRun(
+          `UPDATE warmup_logs SET status='cleared' WHERE account_id=? AND direction='sent' AND status='failed' AND DATE(created_at)=?`,
+          [id, today]
+        );
+        _retryJobs[jobId].ok++;
+        return { id, success: true, email: acc.from_email };
+      } catch (e) {
+        _retryJobs[jobId].fail++;
+        return { id, success: false, error: e.message };
+      } finally {
+        _retryJobs[jobId].done++;
+      }
+    };
+
+    setImmediate(async () => {
+      for (let i = 0; i < account_ids.length; i += BATCH) {
+        const batch = account_ids.slice(i, i + BATCH);
+        const batchResults = await Promise.allSettled(batch.map(testOne));
+        _retryJobs[jobId].results.push(...batchResults.map(r => r.status === 'fulfilled' ? r.value : { success: false }));
+      }
+      _retryJobs[jobId].status = 'done';
+      console.log(`[bulk-retry] Job ${jobId}: ${_retryJobs[jobId].ok} ok, ${_retryJobs[jobId].fail} fail`);
+      // Clean up after 10 min
+      setTimeout(() => { delete _retryJobs[jobId]; }, 10 * 60 * 1000);
+    });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Poll bulk retry job status ─────────────────────────────────────────────
+emailAccountsRouter.get('/bulk-retry-status/:jobId', (req, res) => {
+  const job = _retryJobs[req.params.jobId];
+  if (!job) return res.status(404).json({ error: 'Job not found or expired' });
+  res.json(job);
+});
+
+// ── Password status — tells UI if a password is stored (without exposing it) ─
+emailAccountsRouter.get('/:id/password-status', async (req, res) => {
+  try {
+    const acc = await dbGet('SELECT id, password FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!acc) return res.status(404).json({ error: 'Not found' });
+    res.json({ has_password: !!(acc.password && acc.password.trim()), length: acc.password ? acc.password.length : 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Check which usernames already exist (used by preview step) ────────────
+emailAccountsRouter.post('/check-existing', async (req, res) => {
+  try {
+    const { usernames } = req.body;
+    if (!Array.isArray(usernames) || !usernames.length) return res.json({ existing: {} });
+    // Single query for all usernames
+    const lower = usernames.map(u => u.toLowerCase().trim());
+    const placeholders = lower.map(() => '?').join(',');
+    const rows = await dbAll(
+      `SELECT LOWER(username) as u FROM email_accounts WHERE LOWER(username) IN (${placeholders}) AND user_id=?`,
+      [...lower, req.effectiveUserId]
+    );
+    const existingSet = new Set(rows.map(r => r.u));
+    const result = {};
+    lower.forEach(u => { result[u] = existingSet.has(u); });
+    res.json({ existing: result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Bulk Import (smart upsert — adds new, updates existing) ──────────────
 emailAccountsRouter.post('/bulk-import', async (req, res) => {
   try {
     const { accounts } = req.body;
     if (!Array.isArray(accounts) || !accounts.length)
       return res.status(400).json({ error: 'No accounts provided' });
 
-    let imported = 0;
+    let added = 0, updated = 0;
     const errors = [];
 
     for (let i = 0; i < accounts.length; i++) {
@@ -170,35 +296,55 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
       const name      = get('name') || get('accountname') || fromEmail;
       const dailyLim  = parseInt(get('dailylimit') || get('limit')) || 50;
 
-      if (!username || !password || !host) {
-        errors.push({ row: i + 2, email: username || '(empty)', reason: 'Missing required: username, password, host' });
-        continue;
-      }
-
-      // Skip exact duplicates (same username for this user)
-      const existing = await dbGet('SELECT id FROM email_accounts WHERE LOWER(username)=? AND user_id=?', [username.toLowerCase(), req.effectiveUserId]);
-      if (existing) {
-        errors.push({ row: i + 2, email: username, reason: 'Already exists — skipped' });
+      if (!username || !host) {
+        errors.push({ row: i + 2, email: username || '(empty)', reason: 'Missing required: username, host' });
         continue;
       }
 
       try {
-        const id = uuidv4();
-        await dbRun(
-          `INSERT INTO email_accounts
-            (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure,sending_preset,emails_per_hour,delay_min,delay_max)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [id, req.effectiveUserId, name, 'smtp', host, port, secure,
-           username, password, fromName, fromEmail, dailyLim,
-           imapHost, imapPort, imapSec, 'moderate', 6, 60, 180]
+        const existing = await dbGet(
+          'SELECT id, password FROM email_accounts WHERE LOWER(username)=? AND user_id=?',
+          [username.toLowerCase(), req.effectiveUserId]
         );
-        imported++;
+
+        if (existing) {
+          // ── UPDATE existing account ──────────────────────────────────────
+          // Only update password from CSV if one is provided — never erase saved password
+          const newPass = password || existing.password;
+          await dbRun(
+            `UPDATE email_accounts SET
+               password=?, host=?, port=?, secure=?,
+               from_name=?, from_email=?, daily_limit=?,
+               imap_host=?, imap_port=?, imap_secure=?,
+               name=COALESCE(NULLIF(?,''),name)
+             WHERE id=?`,
+            [newPass, host, port, secure, fromName, fromEmail, dailyLim,
+             imapHost, imapPort, imapSec, name, existing.id]
+          );
+          updated++;
+        } else {
+          // ── INSERT new account — password required ──────────────────────
+          if (!password) {
+            errors.push({ row: i + 2, email: username, reason: 'Password required for new accounts' });
+            continue;
+          }
+          const id = uuidv4();
+          await dbRun(
+            `INSERT INTO email_accounts
+              (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure,sending_preset,emails_per_hour,delay_min,delay_max)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [id, req.effectiveUserId, name, 'smtp', host, port, secure,
+             username, password, fromName, fromEmail, dailyLim,
+             imapHost, imapPort, imapSec, 'moderate', 6, 60, 180]
+          );
+          added++;
+        }
       } catch (e) {
         errors.push({ row: i + 2, email: username, reason: e.message });
       }
     }
 
-    res.json({ imported, total: accounts.length, errors });
+    res.json({ imported: added + updated, added, updated, total: accounts.length, errors });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

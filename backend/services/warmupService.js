@@ -230,6 +230,39 @@ async function sendWarmupEmail(fromAccount, toAccount) {
       INSERT INTO warmup_logs (id,account_id,direction,partner_email,subject,status,error,created_at)
       VALUES (?,?,'sent',?,'Warmup email','failed',?,?)
     `, [uuidv4(), fromAccount.id, toAccount.from_email, e.message, new Date().toISOString()]);
+
+    // ── Detect auth failures and notify the account owner (once per 24h) ──
+    const errMsg = e.message?.toLowerCase() || '';
+    const isAuthFail = e.code === 'EAUTH' ||
+      errMsg.includes('authentication') || errMsg.includes('535') ||
+      errMsg.includes('invalid credentials') || errMsg.includes('username and password') ||
+      errMsg.includes('login failed') || errMsg.includes('auth');
+
+    if (isAuthFail) {
+      try {
+        const lastNotify = fromAccount.warmup_notified_at;
+        const hoursSinceNotify = lastNotify
+          ? (Date.now() - new Date(lastNotify).getTime()) / (1000 * 60 * 60)
+          : 999;
+
+        if (hoursSinceNotify >= 24) {
+          await dbRun(`UPDATE email_accounts SET warmup_notified_at=? WHERE id=?`,
+            [new Date().toISOString(), fromAccount.id]);
+          const { dbGet: _dbGet } = require('../models/db');
+          const owner = await _dbGet('SELECT email, name FROM users WHERE id=?', [fromAccount.user_id]);
+          if (owner?.email) {
+            const { sendWarmupDisconnectAlert } = require('./emailSystem');
+            sendWarmupDisconnectAlert(
+              owner.email, owner.name,
+              fromAccount.from_email, fromAccount.name
+            ).catch(ex => console.error('[warmup] disconnect alert error:', ex.message));
+          }
+        }
+      } catch (notifyErr) {
+        console.error('[warmup] Failed to send disconnect alert:', notifyErr.message);
+      }
+    }
+
     return { success: false };
   }
 }
