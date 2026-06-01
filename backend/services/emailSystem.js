@@ -384,4 +384,45 @@ async function sendBookingAlert(forwardEmail, hostName, bookerName, bookerEmail,
   } catch (e) { console.error(`❌ Booking alert failed:`, e.message); throw e; }
 }
 
-module.exports = { sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail, sendNewUserAlert, sendBookingConfirmation, sendBookingAlert };
+// ── Warmup disconnect alert — inbox SMTP auth failed ─────────────────────
+async function sendWarmupDisconnectAlert(userEmail, userName, inboxEmail, inboxName) {
+  try {
+    const mailer = createSystemMailer();
+    await mailer.sendMail({
+      from: FROM,
+      to: userEmail,
+      subject: `⚠️ Inbox disconnected: ${inboxEmail}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f8fafc;padding:32px 20px">
+          <div style="background:#0D47A1;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px">
+            <div style="font-family:Georgia,serif;font-size:28px;font-weight:800;color:#fff">ado<span style="color:#FCD116">boost</span></div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:3px;margin-top:4px">WARMUP ALERT</div>
+          </div>
+          <div style="background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
+            <div style="background:#fef2f2;border-radius:10px;padding:16px;border-left:4px solid #dc2626;margin-bottom:20px">
+              <div style="fontWeight:700;font-size:15px;color:#991b1b;margin-bottom:6px">⚠️ Inbox Warmup Stopped — Authentication Failed</div>
+              <div style="font-size:13px;color:#b91c1c;line-height:1.6">
+                Hi <strong>${userName || 'there'}</strong>, we couldn't connect to <strong>${inboxEmail}</strong>${inboxName ? ` (${inboxName})` : ''} during warmup.
+                All warmup attempts are failing due to an authentication error — this usually means the SMTP password was changed or the account was blocked.
+              </div>
+            </div>
+            <div style="font-size:14px;color:#374151;margin-bottom:20px;line-height:1.7">
+              <strong>To fix this in 2 steps:</strong><br/>
+              1. Go to <strong>Email Warmup</strong> in AdoBoost<br/>
+              2. Click the <strong>🔄 Retry Connection</strong> button on <em>${inboxEmail}</em>
+            </div>
+            <a href="${BASE_URL()}/settings/warmup" style="display:inline-block;background:#dc2626;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">
+              🔄 Go to Warmup → Fix Connection
+            </a>
+            <hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0"/>
+            <p style="color:#718096;font-size:12px;margin:0">This alert is sent once per 24 hours per inbox. You won't be spammed — only when authentication fails.</p>
+          </div>
+          <p style="text-align:center;font-size:11px;color:#a0aec0;margin-top:20px">AdoBoost by Adobo Solutions · <a href="${BASE_URL()}" style="color:#a0aec0">adobosolutions.com</a></p>
+        </div>
+      `,
+    });
+    console.log(`✅ Warmup disconnect alert sent to ${userEmail} for ${inboxEmail}`);
+  } catch (e) { console.error(`❌ Warmup disconnect alert failed:`, e.message); throw e; }
+}
+
+module.exports = { sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail, sendNewUserAlert, sendBookingConfirmation, sendBookingAlert, sendWarmupDisconnectAlert };

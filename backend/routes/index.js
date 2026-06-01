@@ -132,6 +132,68 @@ emailAccountsRouter.post('/:id/test', async (req, res) => {
   }
 });
 
+// ── Retry SMTP with stored credentials (no re-entry needed) ─────────────
+// Tests stored creds and clears today's failed warmup logs on success so
+// the error banner disappears immediately on refresh.
+emailAccountsRouter.post('/:id/retry-smtp', async (req, res) => {
+  try {
+    const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!acc) return res.status(404).json({ error: 'Not found' });
+    const t = nodemailer.createTransport({
+      host: acc.host, port: acc.port,
+      secure: acc.secure === 1 || acc.port === 465,
+      auth: { user: acc.username, pass: acc.password },
+      tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 15000,
+    });
+    await t.verify();
+    // Clear today's failed warmup logs so the error banner disappears on refresh
+    const today = new Date().toISOString().split('T')[0];
+    await dbRun(
+      `UPDATE warmup_logs SET status='cleared' WHERE account_id=? AND direction='sent' AND status='failed' AND DATE(created_at)=?`,
+      [acc.id, today]
+    );
+    res.json({ success: true, message: 'Connection verified — warmup will resume on the next run.' });
+  } catch (e) {
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// ── Bulk retry SMTP for multiple accounts ─────────────────────────────────
+emailAccountsRouter.post('/bulk-retry-smtp', async (req, res) => {
+  try {
+    const { account_ids } = req.body;
+    if (!Array.isArray(account_ids) || !account_ids.length)
+      return res.status(400).json({ error: 'account_ids required' });
+
+    const today = new Date().toISOString().split('T')[0];
+    const results = [];
+
+    for (const id of account_ids) {
+      const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [id, req.effectiveUserId]);
+      if (!acc) { results.push({ id, success: false, error: 'Not found' }); continue; }
+      try {
+        const t = nodemailer.createTransport({
+          host: acc.host, port: acc.port,
+          secure: acc.secure === 1 || acc.port === 465,
+          auth: { user: acc.username, pass: acc.password },
+          tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
+          connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 10000,
+        });
+        await t.verify();
+        await dbRun(
+          `UPDATE warmup_logs SET status='cleared' WHERE account_id=? AND direction='sent' AND status='failed' AND DATE(created_at)=?`,
+          [id, today]
+        );
+        results.push({ id, success: true, email: acc.from_email });
+      } catch (e) {
+        results.push({ id, success: false, email: acc.from_email, error: e.message });
+      }
+    }
+    res.json({ results });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Bulk Import ─────────────────────────────────
 emailAccountsRouter.post('/bulk-import', async (req, res) => {
   try {

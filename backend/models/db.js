@@ -403,6 +403,8 @@ function runMigrations() {
     `ALTER TABLE campaigns ADD COLUMN visibility TEXT DEFAULT 'everyone'`,
     // ── Soft-delete for messages — keeps message_id in DB so IMAP sync never re-imports deleted emails ──
     `ALTER TABLE messages ADD COLUMN deleted INTEGER DEFAULT 0`,
+    // ── Warmup disconnect notification tracking ──
+    `ALTER TABLE email_accounts ADD COLUMN warmup_notified_at DATETIME`,
     // ── Booking calendar branding + custom SMTP ──
     `ALTER TABLE booking_calendars ADD COLUMN logo_url TEXT DEFAULT ''`,
     `ALTER TABLE booking_calendars ADD COLUMN smtp_host TEXT DEFAULT ''`,
