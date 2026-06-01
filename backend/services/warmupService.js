@@ -240,7 +240,7 @@ async function autoReplyWarmupEmails(account) {
   try {
     const imap = new Imap({
       user:        account.username,
-      password:    account.password,
+      password:    account.imap_password || account.password,
       host:        account.imap_host,
       port:        account.imap_port || 993,
       tls:         account.imap_secure === 1 || account.imap_port === 993,

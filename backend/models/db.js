@@ -163,6 +163,16 @@ function initSchema() {
       status TEXT DEFAULT 'pending', scheduled_at DATETIME,
       sent_at DATETIME, error_message TEXT)`);
 
+    // Migrations: add columns to existing tables (safe — SQLite ignores errors on existing columns)
+    db.run(`ALTER TABLE sequences ADD COLUMN step_type TEXT DEFAULT 'email'`, () => {});
+    db.run(`ALTER TABLE sequences ADD COLUMN linkedin_note TEXT`, () => {});
+    db.run(`ALTER TABLE campaigns ADD COLUMN linkedin_account_id TEXT`, () => {});
+    db.run(`ALTER TABLE campaigns ADD COLUMN rotation_linkedin_ids TEXT DEFAULT '[]'`, () => {});
+    db.run(`ALTER TABLE linkedin_sends ADD COLUMN email_campaign_id TEXT`, () => {});
+    db.run(`ALTER TABLE linkedin_sends ADD COLUMN connection_note TEXT`, () => {});
+    db.run(`ALTER TABLE linkedin_sends ADD COLUMN step_type TEXT DEFAULT 'linkedin_connect'`, () => {});
+    db.run(`ALTER TABLE contacts ADD COLUMN linkedin_connected_via TEXT`, () => {});
+
     // Templates
     db.run(`CREATE TABLE IF NOT EXISTS templates (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
@@ -362,6 +372,8 @@ function runMigrations() {
     `ALTER TABLE campaigns ADD COLUMN visibility TEXT DEFAULT 'everyone'`,
     // ── Soft-delete for messages — keeps message_id in DB so IMAP sync never re-imports deleted emails ──
     `ALTER TABLE messages ADD COLUMN deleted INTEGER DEFAULT 0`,
+    // ── Separate IMAP password (some providers use different credentials) ──
+    `ALTER TABLE email_accounts ADD COLUMN imap_password TEXT DEFAULT ''`,
   ];
 
   for (const sql of migrations) {

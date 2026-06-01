@@ -225,11 +225,12 @@ emailAccountsRouter.put('/:id', async (req, res) => {
     const bool = (v, fallback) => has(v) ? (b[v] ? 1 : 0) : fallback;
     const secureBool = (v, fallback) => has(v) ? ((b[v]===true||b[v]===1||b[v]==='true')?1:0) : fallback;
     const newPassword = b.password ? b.password : acc.password;
+    const newImapPassword = b.imap_password ? b.imap_password : (acc.imap_password || '');
     await dbRun(`UPDATE email_accounts SET
       name=?,type=?,host=?,port=?,secure=?,
       username=?,password=?,from_name=?,from_email=?,daily_limit=?,
       warmup_enabled=?,tags=?,
-      imap_host=?,imap_port=?,imap_secure=?,
+      imap_host=?,imap_port=?,imap_secure=?,imap_password=?,
       emails_per_hour=?,delay_min=?,delay_max=?,
       warmup_start_count=?,warmup_increment=?,warmup_max_count=?,
       signature=?,warmup_product=?,warmup_company=?,warmup_industry=?
@@ -250,6 +251,7 @@ emailAccountsRouter.put('/:id', async (req, res) => {
         has('imap_host')          ? b.imap_host          : acc.imap_host || '',
         has('imap_port')          ? b.imap_port          : acc.imap_port || 993,
         secureBool('imap_secure',   acc.imap_secure),
+        newImapPassword,
         has('emails_per_hour')    ? b.emails_per_hour    : acc.emails_per_hour || 10,
         has('delay_min')          ? b.delay_min          : acc.delay_min || 45,
         has('delay_max')          ? b.delay_max          : acc.delay_max || 120,
@@ -546,22 +548,30 @@ campaignsRouter.get('/:id', async (req, res) => {
 campaignsRouter.post('/', async (req, res) => {
   try {
     const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences, rotation_account_ids,
-            send_days, timezone, send_time_start, send_time_end, all_hours, start_immediately, visibility } = req.body;
+            send_days, timezone, send_time_start, send_time_end, all_hours, start_immediately, visibility, linkedin_account_id } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
+    const hasLinkedInSteps = sequences?.some(s => s.step_type && s.step_type !== 'email');
+    if (hasLinkedInSteps) {
+      const user = await dbGet('SELECT plan FROM users WHERE id=?', [req.effectiveUserId]);
+      if (!['professional', 'unlimited'].includes(user?.plan)) {
+        return res.status(403).json({ error: 'LinkedIn steps require a Professional or Agency plan. Upgrade to unlock this feature.' });
+      }
+    }
+    const liIds = Array.isArray(linkedin_account_id) ? linkedin_account_id : (linkedin_account_id ? [linkedin_account_id] : []);
     const id = uuidv4();
     await dbRun(`INSERT INTO campaigns
       (id,user_id,name,email_account_id,list_id,schedule_type,scheduled_at,daily_limit,track_opens,track_clicks,rotation_account_ids,
-       send_days,timezone,send_time_start,send_time_end,all_hours,start_immediately,visibility)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       send_days,timezone,send_time_start,send_time_end,all_hours,start_immediately,visibility,linkedin_account_id,rotation_linkedin_ids)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, req.effectiveUserId, name, email_account_id||null, list_id||null, schedule_type||'immediate', scheduled_at||null,
        daily_limit||50, track_opens!==false?1:0, track_clicks!==false?1:0, rotation_account_ids||'[]',
        send_days||'mon,tue,wed,thu,fri', timezone||'UTC', send_time_start||'08:00', send_time_end||'18:00',
-       all_hours?1:0, start_immediately?1:0, visibility||'everyone']);
+       all_hours?1:0, start_immediately?1:0, visibility||'everyone', liIds[0]||null, JSON.stringify(liIds)]);
     if (sequences?.length) {
       for (let i=0; i<sequences.length; i++) {
         const s=sequences[i];
-        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours) VALUES (?,?,?,?,?,?,?)',
-          [uuidv4(), id, i+1, s.subject, s.body, s.delay_days||0, s.delay_hours||0]);
+        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note) VALUES (?,?,?,?,?,?,?,?,?)',
+          [uuidv4(), id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'']);
       }
     }
     res.json(await dbGet('SELECT * FROM campaigns WHERE id=?', [id]));
@@ -573,21 +583,29 @@ campaignsRouter.put('/:id', async (req, res) => {
     const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
     const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences, rotation_account_ids,
-            send_days, timezone, send_time_start, send_time_end, all_hours, start_immediately, visibility } = req.body;
+            send_days, timezone, send_time_start, send_time_end, all_hours, start_immediately, visibility, linkedin_account_id } = req.body;
+    const hasLinkedInSteps = sequences?.some(s => s.step_type && s.step_type !== 'email');
+    if (hasLinkedInSteps) {
+      const user = await dbGet('SELECT plan FROM users WHERE id=?', [req.effectiveUserId]);
+      if (!['professional', 'unlimited'].includes(user?.plan)) {
+        return res.status(403).json({ error: 'LinkedIn steps require a Professional or Agency plan. Upgrade to unlock this feature.' });
+      }
+    }
+    const liIds = Array.isArray(linkedin_account_id) ? linkedin_account_id : (linkedin_account_id ? [linkedin_account_id] : []);
     await dbRun(`UPDATE campaigns SET
       name=?,email_account_id=?,list_id=?,schedule_type=?,scheduled_at=?,daily_limit=?,track_opens=?,track_clicks=?,rotation_account_ids=?,
-      send_days=?,timezone=?,send_time_start=?,send_time_end=?,all_hours=?,start_immediately=?,visibility=?
+      send_days=?,timezone=?,send_time_start=?,send_time_end=?,all_hours=?,start_immediately=?,visibility=?,linkedin_account_id=?,rotation_linkedin_ids=?
       WHERE id=? AND user_id=?`,
       [name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens?1:0, track_clicks?1:0, rotation_account_ids||'[]',
        send_days||'mon,tue,wed,thu,fri', timezone||'UTC', send_time_start||'08:00', send_time_end||'18:00',
-       all_hours?1:0, start_immediately?1:0, visibility||'everyone',
+       all_hours?1:0, start_immediately?1:0, visibility||'everyone', liIds[0]||null, JSON.stringify(liIds),
        req.params.id, req.effectiveUserId]);
     if (sequences) {
       await dbRun('DELETE FROM sequences WHERE campaign_id=?', [req.params.id]);
       for (let i=0; i<sequences.length; i++) {
         const s=sequences[i];
-        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours) VALUES (?,?,?,?,?,?,?)',
-          [uuidv4(), req.params.id, i+1, s.subject, s.body, s.delay_days||0, s.delay_hours||0]);
+        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note) VALUES (?,?,?,?,?,?,?,?,?)',
+          [uuidv4(), req.params.id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'']);
       }
     }
     res.json({ success: true });
@@ -598,10 +616,17 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
   try {
     const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
-    if (!c.email_account_id) return res.status(400).json({ error: 'Select an email account first' });
     if (!c.list_id) return res.status(400).json({ error: 'Select a contact list first' });
     const seqs = await dbAll('SELECT * FROM sequences WHERE campaign_id=? ORDER BY step_number', [c.id]);
-    if (!seqs.length) return res.status(400).json({ error: 'Add at least one email sequence' });
+    if (!seqs.length) return res.status(400).json({ error: 'Add at least one step' });
+
+    const emailSeqs = seqs.filter(s => !s.step_type || s.step_type === 'email');
+    const liSeqs    = seqs.filter(s => s.step_type && s.step_type !== 'email');
+    if (emailSeqs.length > 0 && !c.email_account_id) return res.status(400).json({ error: 'Select an email account first' });
+    let liAccountIds = [];
+    try { liAccountIds = JSON.parse(c.rotation_linkedin_ids || '[]'); } catch {}
+    if (!liAccountIds.length && c.linkedin_account_id) liAccountIds = [c.linkedin_account_id];
+    if (liSeqs.length > 0 && !liAccountIds.length) return res.status(400).json({ error: 'Select a LinkedIn account for your LinkedIn steps' });
 
     // FIX #4: Prevent double-launch — check for existing pending/sent sends
     const existingSends = await dbGet(`SELECT id FROM sends WHERE campaign_id=? AND status IN ('pending','sent') LIMIT 1`, [c.id]);
@@ -616,15 +641,36 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     const userTimezone = userRow?.timezone || 'UTC';
     const now = new Date();
 
-    // Generate humanized, window-aware send schedule (all times in user's timezone)
-    const scheduledSends = humanScheduleSends(contacts, seqs, emailAccount || {}, now, userTimezone);
-
+    // Email sends — humanized schedule
+    const scheduledSends = emailSeqs.length ? humanScheduleSends(contacts, emailSeqs, emailAccount || {}, now, userTimezone) : [];
     for (const item of scheduledSends) {
       await dbRun(
         'INSERT INTO sends (id,campaign_id,sequence_id,contact_id,email_account_id,status,scheduled_at) VALUES (?,?,?,?,?,?,?)',
         [uuidv4(), c.id, item.sequence.id, item.contact.id, c.email_account_id, 'pending', item.scheduled_at]
       );
     }
+
+    // LinkedIn sends — cumulative delay from launch time, round-robin across LinkedIn accounts
+    let liCount = 0;
+    if (liSeqs.length > 0) {
+      let cumulativeMs = 0;
+      let liAcctIdx = 0;
+      for (const seq of liSeqs) {
+        cumulativeMs += ((seq.delay_days || 0) * 86400 + (seq.delay_hours || 0) * 3600) * 1000;
+        for (const contact of contacts) {
+          if (!contact.linkedin) continue; // skip contacts with no LinkedIn URL — don't stop sequence
+          const acctId = liAccountIds[liAcctIdx % liAccountIds.length];
+          liAcctIdx++;
+          const scheduledAt = new Date(now.getTime() + cumulativeMs).toISOString();
+          await dbRun(
+            'INSERT INTO linkedin_sends (id,campaign_id,email_campaign_id,contact_id,linkedin_account_id,linkedin_profile_url,connection_note,step_type,status,scheduled_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            [uuidv4(), c.id, c.id, contact.id, acctId, contact.linkedin, seq.linkedin_note||'', seq.step_type, 'pending', scheduledAt]
+          );
+          liCount++;
+        }
+      }
+    }
+
     const count = scheduledSends.length;
 
     // Preview: show first-day count and first/last send times
@@ -633,7 +679,7 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     console.log(`🚀 Campaign ${c.id}: ${count} sends scheduled | first=${firstSend} | last=${lastSend}`);
 
     await dbRun(`UPDATE campaigns SET status='active', started_at=? WHERE id=?`, [now.toISOString(), c.id]);
-    res.json({ success: true, scheduled: count, first_send: firstSend, last_send: lastSend });
+    res.json({ success: true, scheduled: count, linkedin_scheduled: liCount, first_send: firstSend, last_send: lastSend });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
