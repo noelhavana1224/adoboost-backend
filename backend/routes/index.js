@@ -194,14 +194,33 @@ emailAccountsRouter.post('/bulk-retry-smtp', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Bulk Import ─────────────────────────────────
+// ── Check which usernames already exist (used by preview step) ────────────
+emailAccountsRouter.post('/check-existing', async (req, res) => {
+  try {
+    const { usernames } = req.body;
+    if (!Array.isArray(usernames) || !usernames.length) return res.json({ existing: {} });
+    // Single query for all usernames
+    const lower = usernames.map(u => u.toLowerCase().trim());
+    const placeholders = lower.map(() => '?').join(',');
+    const rows = await dbAll(
+      `SELECT LOWER(username) as u FROM email_accounts WHERE LOWER(username) IN (${placeholders}) AND user_id=?`,
+      [...lower, req.effectiveUserId]
+    );
+    const existingSet = new Set(rows.map(r => r.u));
+    const result = {};
+    lower.forEach(u => { result[u] = existingSet.has(u); });
+    res.json({ existing: result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Bulk Import (smart upsert — adds new, updates existing) ──────────────
 emailAccountsRouter.post('/bulk-import', async (req, res) => {
   try {
     const { accounts } = req.body;
     if (!Array.isArray(accounts) || !accounts.length)
       return res.status(400).json({ error: 'No accounts provided' });
 
-    let imported = 0;
+    let added = 0, updated = 0;
     const errors = [];
 
     for (let i = 0; i < accounts.length; i++) {
@@ -237,30 +256,44 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
         continue;
       }
 
-      // Skip exact duplicates (same username for this user)
-      const existing = await dbGet('SELECT id FROM email_accounts WHERE LOWER(username)=? AND user_id=?', [username.toLowerCase(), req.effectiveUserId]);
-      if (existing) {
-        errors.push({ row: i + 2, email: username, reason: 'Already exists — skipped' });
-        continue;
-      }
-
       try {
-        const id = uuidv4();
-        await dbRun(
-          `INSERT INTO email_accounts
-            (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure,sending_preset,emails_per_hour,delay_min,delay_max)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [id, req.effectiveUserId, name, 'smtp', host, port, secure,
-           username, password, fromName, fromEmail, dailyLim,
-           imapHost, imapPort, imapSec, 'moderate', 6, 60, 180]
+        const existing = await dbGet(
+          'SELECT id FROM email_accounts WHERE LOWER(username)=? AND user_id=?',
+          [username.toLowerCase(), req.effectiveUserId]
         );
-        imported++;
+
+        if (existing) {
+          // ── UPDATE existing account (password + settings from CSV) ──────
+          await dbRun(
+            `UPDATE email_accounts SET
+               password=?, host=?, port=?, secure=?,
+               from_name=?, from_email=?, daily_limit=?,
+               imap_host=?, imap_port=?, imap_secure=?,
+               name=COALESCE(NULLIF(?,''),name)
+             WHERE id=?`,
+            [password, host, port, secure, fromName, fromEmail, dailyLim,
+             imapHost, imapPort, imapSec, name, existing.id]
+          );
+          updated++;
+        } else {
+          // ── INSERT new account ──────────────────────────────────────────
+          const id = uuidv4();
+          await dbRun(
+            `INSERT INTO email_accounts
+              (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure,sending_preset,emails_per_hour,delay_min,delay_max)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [id, req.effectiveUserId, name, 'smtp', host, port, secure,
+             username, password, fromName, fromEmail, dailyLim,
+             imapHost, imapPort, imapSec, 'moderate', 6, 60, 180]
+          );
+          added++;
+        }
       } catch (e) {
         errors.push({ row: i + 2, email: username, reason: e.message });
       }
     }
 
-    res.json({ imported, total: accounts.length, errors });
+    res.json({ imported: added + updated, added, updated, total: accounts.length, errors });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
