@@ -426,6 +426,8 @@ function runMigrations() {
     `ALTER TABLE booking_calendars ADD COLUMN smtp_secure INTEGER DEFAULT 0`,
     // ── Separate IMAP password (some providers use different credentials) ──
     `ALTER TABLE email_accounts ADD COLUMN imap_password TEXT DEFAULT ''`,
+    // ── Warmup inbox separation — flags emails from AdoBoost warmup network ──
+    `ALTER TABLE messages ADD COLUMN is_warmup INTEGER DEFAULT 0`,
   ];
 
   for (const sql of migrations) {

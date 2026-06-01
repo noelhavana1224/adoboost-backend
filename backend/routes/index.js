@@ -934,16 +934,66 @@ messagesRouter.get('/inbox', async (req, res) => {
   try {
     const { search, status, tag, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
-    let where=['m.user_id=?','m.is_auto_reply=0','(m.archived=0 OR m.archived IS NULL)','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
+    // Exclude warmup emails — they go to the dedicated Warmer Inbox
+    let where=['m.user_id=?','m.is_auto_reply=0','(m.is_warmup=0 OR m.is_warmup IS NULL)','(m.archived=0 OR m.archived IS NULL)','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     if (status) { where.push('m.status=?'); params.push(status); }
     if (tag) { where.push('m.tag=?'); params.push(tag); }
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
-    // FIX #7: Return unread count for badge display (exclude soft-deleted rows)
-    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND m.status='unread' AND (m.deleted=0 OR m.deleted IS NULL)`, [req.effectiveUserId])).n;
+    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND (m.is_warmup=0 OR m.is_warmup IS NULL) AND m.status='unread' AND (m.deleted=0 OR m.deleted IS NULL)`, [req.effectiveUserId])).n;
     res.json({ messages, total, page: Number(page), unread });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Warmer Inbox ────────────────────────────────────────────────────────────
+messagesRouter.get('/warmer-inbox', async (req, res) => {
+  try {
+    const { search, page=1, limit=20 } = req.query;
+    const offset = (page-1)*limit;
+    let where=['m.user_id=?','m.is_warmup=1','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
+    if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
+    const w='WHERE '+where.join(' AND ');
+    const messages = await dbAll(`
+      SELECT m.*, ea.name as sender_account_name
+      FROM messages m
+      LEFT JOIN email_accounts ea ON LOWER(ea.from_email)=LOWER(m.from_email)
+      ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+    `, params);
+    const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
+    const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_warmup=1 AND m.status='unread' AND (m.deleted=0 OR m.deleted IS NULL)`, [req.effectiveUserId])).n;
+    const stats = await dbGet(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN m.status='unread' THEN 1 ELSE 0 END) as unread,
+        COUNT(DISTINCT m.from_email) as unique_senders,
+        SUM(CASE WHEN DATE(m.received_at)=DATE('now') THEN 1 ELSE 0 END) as today
+      FROM messages m WHERE m.user_id=? AND m.is_warmup=1 AND (m.deleted=0 OR m.deleted IS NULL)
+    `, [req.effectiveUserId]);
+    res.json({ messages, total, page: Number(page), unread, stats });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+messagesRouter.post('/warmer-inbox/mark-all-read', async (req, res) => {
+  try {
+    await dbRun(`UPDATE messages SET status='read' WHERE user_id=? AND is_warmup=1 AND status='unread'`, [req.effectiveUserId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Backfill existing messages — retroactively mark warmup emails
+messagesRouter.post('/warmer-inbox/backfill', async (req, res) => {
+  try {
+    const adoBoostEmails = await dbAll('SELECT LOWER(from_email) as email FROM email_accounts UNION SELECT LOWER(username) as email FROM email_accounts');
+    const emailList = [...new Set(adoBoostEmails.map(r => r.email).filter(Boolean))];
+    if (!emailList.length) return res.json({ classified: 0 });
+    const placeholders = emailList.map(() => '?').join(',');
+    const result = await dbRun(
+      `UPDATE messages SET is_warmup=1 WHERE (is_warmup=0 OR is_warmup IS NULL) AND LOWER(from_email) IN (${placeholders})`,
+      emailList
+    );
+    res.json({ success: true, classified: result.changes });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

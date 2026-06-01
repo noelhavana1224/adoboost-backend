@@ -115,10 +115,21 @@ async function syncInbox(account) {
             const autoReply = isAutoReply(subject, fromEmail) ? 1 : 0;
             const status = autoReply ? 'auto-reply' : 'unread';
 
+            // ── Detect warmup emails ──────────────────────────────────────────
+            // An email is a warmup email if the sender is another AdoBoost
+            // email account (any user) — meaning it came from the warmup network.
+            // Also check the X-Warmup-Email header set by the warmup engine.
+            const warmupHeader = parsed.headers?.get('x-warmup-email') || '';
+            const senderIsAdoBoostAccount = await dbGet(
+              'SELECT id FROM email_accounts WHERE LOWER(from_email)=? OR LOWER(username)=?',
+              [fromEmail, fromEmail]
+            );
+            const isWarmup = (warmupHeader === 'true' || !!senderIsAdoBoostAccount) ? 1 : 0;
+
             // ✅ Save ALL incoming emails — campaign match is a bonus, not a requirement
             await dbRun(`
-              INSERT INTO messages (id, user_id, campaign_id, from_email, from_name, subject, body, message_id, received_at, status, is_auto_reply)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              INSERT INTO messages (id, user_id, campaign_id, from_email, from_name, subject, body, message_id, received_at, status, is_auto_reply, is_warmup)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [
               uuidv4(),
               account.user_id,
@@ -131,6 +142,7 @@ async function syncInbox(account) {
               receivedAt,
               status,
               autoReply,
+              isWarmup,
             ]);
 
             // If matched to a campaign send, mark contact as replied
