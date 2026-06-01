@@ -159,39 +159,75 @@ emailAccountsRouter.post('/:id/retry-smtp', async (req, res) => {
   }
 });
 
-// ── Bulk retry SMTP for multiple accounts ─────────────────────────────────
+// ── Bulk retry SMTP — returns IMMEDIATELY, processes in background ─────────
+// Testing 60+ SMTP connections sequentially takes minutes and times out.
+// Instead: respond at once, run tests concurrently in background (batches of 8,
+// 5s timeout each). Client polls /bulk-retry-status/:jobId for the result.
+const _retryJobs = {}; // in-memory job store (survives only current process)
+
 emailAccountsRouter.post('/bulk-retry-smtp', async (req, res) => {
   try {
     const { account_ids } = req.body;
     if (!Array.isArray(account_ids) || !account_ids.length)
       return res.status(400).json({ error: 'account_ids required' });
 
-    const today = new Date().toISOString().split('T')[0];
-    const results = [];
+    const jobId = require('crypto').randomBytes(8).toString('hex');
+    _retryJobs[jobId] = { status: 'running', total: account_ids.length, done: 0, ok: 0, fail: 0, results: [] };
 
-    for (const id of account_ids) {
-      const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [id, req.effectiveUserId]);
-      if (!acc) { results.push({ id, success: false, error: 'Not found' }); continue; }
+    // ── Respond IMMEDIATELY so the client doesn't time out ──
+    res.json({ jobId, total: account_ids.length, background: true });
+
+    // ── Process concurrently in background ──────────────────
+    const today = new Date().toISOString().split('T')[0];
+    const userId = req.effectiveUserId;
+    const BATCH = 8; // test 8 at a time
+
+    const testOne = async (id) => {
       try {
+        const acc = await dbGet('SELECT * FROM email_accounts WHERE id=? AND user_id=?', [id, userId]);
+        if (!acc) { _retryJobs[jobId].fail++; return { id, success: false, error: 'Not found' }; }
         const t = nodemailer.createTransport({
           host: acc.host, port: acc.port,
           secure: acc.secure === 1 || acc.port === 465,
           auth: { user: acc.username, pass: acc.password },
           tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
-          connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 10000,
+          connectionTimeout: 5000, greetingTimeout: 5000, socketTimeout: 5000,
         });
         await t.verify();
         await dbRun(
           `UPDATE warmup_logs SET status='cleared' WHERE account_id=? AND direction='sent' AND status='failed' AND DATE(created_at)=?`,
           [id, today]
         );
-        results.push({ id, success: true, email: acc.from_email });
+        _retryJobs[jobId].ok++;
+        return { id, success: true, email: acc.from_email };
       } catch (e) {
-        results.push({ id, success: false, email: acc.from_email, error: e.message });
+        _retryJobs[jobId].fail++;
+        return { id, success: false, error: e.message };
+      } finally {
+        _retryJobs[jobId].done++;
       }
-    }
-    res.json({ results });
+    };
+
+    setImmediate(async () => {
+      for (let i = 0; i < account_ids.length; i += BATCH) {
+        const batch = account_ids.slice(i, i + BATCH);
+        const batchResults = await Promise.allSettled(batch.map(testOne));
+        _retryJobs[jobId].results.push(...batchResults.map(r => r.status === 'fulfilled' ? r.value : { success: false }));
+      }
+      _retryJobs[jobId].status = 'done';
+      console.log(`[bulk-retry] Job ${jobId}: ${_retryJobs[jobId].ok} ok, ${_retryJobs[jobId].fail} fail`);
+      // Clean up after 10 min
+      setTimeout(() => { delete _retryJobs[jobId]; }, 10 * 60 * 1000);
+    });
+
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Poll bulk retry job status ─────────────────────────────────────────────
+emailAccountsRouter.get('/bulk-retry-status/:jobId', (req, res) => {
+  const job = _retryJobs[req.params.jobId];
+  if (!job) return res.status(404).json({ error: 'Job not found or expired' });
+  res.json(job);
 });
 
 // ── Check which usernames already exist (used by preview step) ────────────
