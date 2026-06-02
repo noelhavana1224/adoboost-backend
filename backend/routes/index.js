@@ -982,6 +982,33 @@ messagesRouter.post('/warmer-inbox/mark-all-read', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Bulk delete warmup messages
+messagesRouter.post('/warmer-inbox/bulk-delete', async (req, res) => {
+  try {
+    const { ids, delete_all } = req.body;
+    if (delete_all) {
+      // Delete ALL warmup messages for this user
+      const result = await dbRun(
+        `UPDATE messages SET deleted=1 WHERE user_id=? AND is_warmup=1 AND (deleted=0 OR deleted IS NULL)`,
+        [req.effectiveUserId]
+      );
+      return res.json({ success: true, deleted: result.changes });
+    }
+    if (!Array.isArray(ids) || !ids.length)
+      return res.status(400).json({ error: 'ids required' });
+    // Soft-delete each — keeps message_id so IMAP sync won't re-import
+    let deleted = 0;
+    for (const id of ids) {
+      const r = await dbRun(
+        `UPDATE messages SET deleted=1 WHERE id=? AND user_id=? AND is_warmup=1`,
+        [id, req.effectiveUserId]
+      );
+      if (r.changes) deleted++;
+    }
+    res.json({ success: true, deleted });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Backfill existing messages — retroactively mark warmup emails
 messagesRouter.post('/warmer-inbox/backfill', async (req, res) => {
   try {
