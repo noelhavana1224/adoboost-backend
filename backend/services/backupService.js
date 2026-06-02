@@ -16,7 +16,8 @@
 
 const fs   = require('fs');
 const path = require('path');
-const { getDb, dbRun } = require('../models/db');
+const zlib = require('zlib');
+const { getDb, dbRun, dbGet } = require('../models/db');
 
 const DATA_DIR   = process.env.DATA_DIR || '/home/u346663333/adoboost-data';
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
@@ -76,4 +77,43 @@ function listBackups() {
   } catch { return []; }
 }
 
-module.exports = { runBackup, listBackups, BACKUP_DIR };
+// ── Weekly offsite backup — emails a gzipped snapshot to the admin ──────────
+// Your inbox = the offsite copy. Recipient: BACKUP_EMAIL env, else the first
+// admin user's email. Skips silently if the system mailer isn't configured.
+async function emailWeeklyBackup() {
+  try {
+    // 1. Make a fresh snapshot
+    const result = await runBackup();
+    if (!result.success) { console.error('[backup] weekly email skipped — backup failed'); return; }
+    const srcPath = path.join(BACKUP_DIR, result.file);
+
+    // 2. Resolve recipient
+    let to = process.env.BACKUP_EMAIL;
+    if (!to) {
+      const admin = await dbGet(`SELECT email, notify_email FROM users WHERE role='admin' ORDER BY created_at ASC LIMIT 1`);
+      to = admin?.notify_email || admin?.email;
+    }
+    if (!to) { console.warn('[backup] no recipient for weekly backup email'); return; }
+
+    // 3. Gzip the snapshot (16MB → ~3-4MB, emailable)
+    const gz = zlib.gzipSync(fs.readFileSync(srcPath));
+    const gzName = result.file + '.gz';
+    const gzMB = (gz.length / 1024 / 1024).toFixed(2);
+
+    // 4. Send via the system mailer
+    const { createSystemMailer } = require('./emailSystem');
+    const transporter = createSystemMailer();
+    await transporter.sendMail({
+      from: '"AdoBoost Backups" <noreply@adobosolutions.com>',
+      to,
+      subject: `🗄️ AdoBoost weekly database backup — ${result.file}`,
+      text: `Attached is your weekly AdoBoost database backup (${gzMB} MB gzipped, ${result.sizeMB} MB uncompressed).\n\nKeep this email — it is your offsite copy. To restore: gunzip the file, stop the app, replace adoboost.db, delete the -wal/-shm files, and restart.\n\nAccount passwords inside are AES-encrypted at rest.`,
+      attachments: [{ filename: gzName, content: gz }],
+    });
+    console.log(`📧 Weekly backup emailed to ${to} (${gzMB} MB)`);
+  } catch (e) {
+    console.error('[backup] weekly email failed:', e.message);
+  }
+}
+
+module.exports = { runBackup, listBackups, emailWeeklyBackup, BACKUP_DIR };

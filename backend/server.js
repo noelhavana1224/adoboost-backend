@@ -8,9 +8,10 @@ process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason);
 });
 
-// override:true lets the app's .env file take precedence over panel-injected
-// vars, so secrets (JWT_SECRET, SMTP_ENC_KEY) can be rotated via the .env file.
-require('dotenv').config({ override: true });
+// Load .env from an ABSOLUTE path (Passenger's cwd is not the app dir, so a
+// bare dotenv.config() silently finds nothing). override:true lets this file
+// take precedence over panel-injected vars so secrets can be rotated here.
+require('dotenv').config({ override: true, path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
@@ -250,6 +251,11 @@ if (backupService) {
   cron.schedule('30 3 * * *', async () => {
     try { await backupService.runBackup(); }
     catch (e) { console.error('Backup error:', e.message); }
+  });
+  // Weekly offsite backup — emailed to admin every Sunday at 4:00 AM
+  cron.schedule('0 4 * * 0', async () => {
+    try { await backupService.emailWeeklyBackup(); }
+    catch (e) { console.error('Weekly backup email error:', e.message); }
   });
   // Run one backup ~30s after startup so there's always a fresh snapshot
   setTimeout(() => { backupService.runBackup().catch(() => {}); }, 30000);

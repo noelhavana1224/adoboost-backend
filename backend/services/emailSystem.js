@@ -425,4 +425,4 @@ async function sendWarmupDisconnectAlert(userEmail, userName, inboxEmail, inboxN
   } catch (e) { console.error(`❌ Warmup disconnect alert failed:`, e.message); throw e; }
 }
 
-module.exports = { sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail, sendNewUserAlert, sendBookingConfirmation, sendBookingAlert, sendWarmupDisconnectAlert };
+module.exports = { createSystemMailer, sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail, sendNewUserAlert, sendBookingConfirmation, sendBookingAlert, sendWarmupDisconnectAlert };

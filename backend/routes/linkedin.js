@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { dbGet, dbAll, dbRun } = require('../models/db');
 const { authMiddleware } = require('../middleware/auth');
 const { testCookies } = require('../services/linkedinService');
+const { enc, dec } = require('../utils/crypto');
 const router = express.Router();
 router.use(authMiddleware);
 
@@ -25,7 +26,7 @@ router.post('/accounts', async (req, res) => {
     const id = uuidv4();
     await dbRun(
       `INSERT INTO linkedin_accounts (id, user_id, name, li_at, jsessionid, daily_limit) VALUES (?,?,?,?,?,?)`,
-      [id, req.userId, name, li_at, jsessionid, daily_limit || 20]
+      [id, req.userId, name, enc(li_at), enc(jsessionid), daily_limit || 20]
     );
     const account = await dbGet(`SELECT id, name, daily_limit, sent_today, status, created_at FROM linkedin_accounts WHERE id=?`, [id]);
     res.json(account);
@@ -38,7 +39,8 @@ router.post('/accounts/:id/test', async (req, res) => {
     if (!account) return res.status(404).json({ error: 'Not found' });
 
     // Validate cookie format locally — LinkedIn blocks server-side API calls from data center IPs
-    const { li_at, jsessionid } = account;
+    const li_at = dec(account.li_at);
+    const jsessionid = dec(account.jsessionid);
     if (!li_at || li_at.length < 20) {
       await dbRun(`UPDATE linkedin_accounts SET status='error' WHERE id=?`, [account.id]);
       return res.status(400).json({ error: 'li_at cookie appears empty or invalid — re-copy your cookies and try again' });

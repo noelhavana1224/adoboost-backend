@@ -19,11 +19,34 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const PREFIX = 'enc:v1:';
 
+// Persistent key file — lives in DATA_DIR (survives app redeploys, unlike the
+// app-dir .env). This guarantees the key is never lost, which would make all
+// encrypted passwords permanently unrecoverable.
+const DATA_DIR = process.env.DATA_DIR || '/home/u346663333/adoboost-data';
+const KEY_FILE = path.join(DATA_DIR, '.smtp_enc_key');
+
+let _cachedRaw = null;
+function getRawKey() {
+  if (_cachedRaw) return _cachedRaw;
+  // 1. Prefer env var
+  if (process.env.SMTP_ENC_KEY) { _cachedRaw = process.env.SMTP_ENC_KEY.trim(); return _cachedRaw; }
+  // 2. Fall back to persistent key file
+  try {
+    if (fs.existsSync(KEY_FILE)) {
+      const v = fs.readFileSync(KEY_FILE, 'utf8').trim();
+      if (v) { _cachedRaw = v; return _cachedRaw; }
+    }
+  } catch {}
+  return null;
+}
+
 function getKey() {
-  const raw = process.env.SMTP_ENC_KEY;
+  const raw = getRawKey();
   if (!raw) return null;
   // Accept 64-hex (32 bytes) or any string (hashed to 32 bytes)
   if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, 'hex');

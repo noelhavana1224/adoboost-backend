@@ -1,6 +1,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const { dbAll, dbRun } = require('../models/db');
+const { dec } = require('../utils/crypto');
 
 function buildHeaders(liAt, jsessionid) {
   const csrf = jsessionid.replace(/^["']|["']$/g, '');
@@ -126,7 +127,7 @@ async function processPendingLinkedInSends() {
 
     try {
       const note = personalize(send.resolved_note, send);
-      await sendConnectionRequest(send.li_at, send.jsessionid, slug, note);
+      await sendConnectionRequest(dec(send.li_at), dec(send.jsessionid), slug, note);
       const sentAt = new Date().toISOString();
       await dbRun(`UPDATE linkedin_sends SET status='sent', sent_at=? WHERE id=?`, [sentAt, send.id]);
       await dbRun(`UPDATE linkedin_accounts SET sent_today = sent_today + 1 WHERE id=?`, [send.linkedin_account_id]);

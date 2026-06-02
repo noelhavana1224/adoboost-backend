@@ -1594,6 +1594,15 @@ adminRouter.post('/backups/run', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Trigger the weekly offsite (emailed) backup on demand
+adminRouter.post('/backups/email-now', async (req, res) => {
+  try {
+    const { emailWeeklyBackup } = require('../services/backupService');
+    await emailWeeklyBackup();
+    res.json({ success: true, message: 'Weekly backup email triggered — check the admin inbox.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Encrypt existing SMTP/IMAP passwords at rest (one-time migration) ────────
 // Safe to run repeatedly — already-encrypted values are skipped.
 // Requires SMTP_ENC_KEY to be set, otherwise it's a no-op.
@@ -1618,7 +1627,22 @@ adminRouter.post('/security/encrypt-secrets', async (req, res) => {
         skipped++;
       }
     }
-    res.json({ success: true, encrypted, skipped, total: accounts.length });
+
+    // LinkedIn account cookies (li_at / jsessionid)
+    let liEncrypted = 0;
+    const liAccounts = await dbAll('SELECT id, li_at, jsessionid FROM linkedin_accounts');
+    for (const a of liAccounts) {
+      const updates = [], params = [];
+      if (a.li_at && !isEncrypted(a.li_at)) { updates.push('li_at=?'); params.push(enc(a.li_at)); }
+      if (a.jsessionid && !isEncrypted(a.jsessionid)) { updates.push('jsessionid=?'); params.push(enc(a.jsessionid)); }
+      if (updates.length) {
+        params.push(a.id);
+        await dbRun(`UPDATE linkedin_accounts SET ${updates.join(', ')} WHERE id=?`, params);
+        liEncrypted++;
+      }
+    }
+
+    res.json({ success: true, encrypted, skipped, total: accounts.length, linkedin_encrypted: liEncrypted, linkedin_total: liAccounts.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
