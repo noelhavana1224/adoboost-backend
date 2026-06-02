@@ -123,6 +123,7 @@ try { app.use('/api/smtp-test', require('./routes/smtptest')); } catch (e) { con
 try { app.use('/api/auth', require('./routes/authSystem')); } catch (e) { console.error('[startup] authSystem:', e.message); }
 try { app.use('/api/ai', require('./routes/ai')); } catch (e) { console.error('[startup] ai routes:', e.message); }
 try { app.use('/api/linkedin', require('./routes/linkedin')); } catch (e) { console.error('[startup] linkedin:', e.message); }
+try { app.use('/api/blacklist', require('./routes/blacklist')); } catch (e) { console.error('[startup] blacklist:', e.message); }
 
 mount('/api/email-accounts', emailAccountsRouter,  'emailAccountsRouter');
 mount('/api/contacts',       contactsRouter,        'contactsRouter');
@@ -208,6 +209,7 @@ const imapService     = safeRequire('./services/imapService');
 const warmupService   = safeRequire('./services/warmupService');
 const linkedinService = safeRequire('./services/linkedinService');
 const backupService   = safeRequire('./services/backupService');
+const blacklistService = safeRequire('./services/blacklistService');
 
 if (emailService) {
   cron.schedule('*/2 * * * *', async () => {
@@ -243,6 +245,16 @@ if (linkedinService) {
     try { await linkedinService.resetLinkedInDailyCounters(); }
     catch (e) { console.error('LinkedIn counter reset error:', e.message); }
   });
+}
+
+// ── Blacklist / DNSBL monitoring ────────────────────────────────────────────
+// Scan all sending domains every 12 hours + once ~60s after startup.
+if (blacklistService) {
+  cron.schedule('0 */12 * * *', async () => {
+    try { await blacklistService.refreshAllDomains(); }
+    catch (e) { console.error('Blacklist scan error:', e.message); }
+  });
+  setTimeout(() => { blacklistService.refreshAllDomains().catch(() => {}); }, 60000);
 }
 
 // ── Nightly database backup ─────────────────────────────────────────────────

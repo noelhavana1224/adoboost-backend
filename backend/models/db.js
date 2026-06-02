@@ -163,6 +163,15 @@ function initSchema() {
       status TEXT DEFAULT 'pending', scheduled_at DATETIME,
       sent_at DATETIME, error_message TEXT)`);
 
+    // Blacklist / DNSBL monitoring — one cached row per sending domain
+    db.run(`CREATE TABLE IF NOT EXISTS blacklist_status (
+      domain TEXT PRIMARY KEY,
+      ip TEXT,
+      results TEXT DEFAULT '[]',
+      listed_count INTEGER DEFAULT 0,
+      total_lists INTEGER DEFAULT 0,
+      checked_at DATETIME)`);
+
     // Migrations: add columns to existing tables (safe — SQLite ignores errors on existing columns)
     db.run(`ALTER TABLE sequences ADD COLUMN step_type TEXT DEFAULT 'email'`, () => {});
     db.run(`ALTER TABLE sequences ADD COLUMN linkedin_note TEXT`, () => {});
