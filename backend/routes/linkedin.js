@@ -36,15 +36,24 @@ router.post('/accounts/:id/test', async (req, res) => {
   try {
     const account = await dbGet(`SELECT * FROM linkedin_accounts WHERE id=? AND user_id=?`, [req.params.id, req.userId]);
     if (!account) return res.status(404).json({ error: 'Not found' });
-    const result = await testCookies(account.li_at, account.jsessionid);
+
+    // Validate cookie format locally — LinkedIn blocks server-side API calls from data center IPs
+    const { li_at, jsessionid } = account;
+    if (!li_at || li_at.length < 20) {
+      await dbRun(`UPDATE linkedin_accounts SET status='error' WHERE id=?`, [account.id]);
+      return res.status(400).json({ error: 'li_at cookie appears empty or invalid — re-copy your cookies and try again' });
+    }
+    const rawSession = jsessionid.replace(/^["']|["']$/g, '');
+    if (!rawSession.includes('ajax:')) {
+      await dbRun(`UPDATE linkedin_accounts SET status='error' WHERE id=?`, [account.id]);
+      return res.status(400).json({ error: 'JSESSIONID looks wrong — expected format like ajax:1234567890. Re-copy your cookies.' });
+    }
+
     await dbRun(`UPDATE linkedin_accounts SET status='active' WHERE id=?`, [account.id]);
-    res.json(result);
+    res.json({ ok: true, name: 'LinkedIn User' });
   } catch (err) {
     await dbRun(`UPDATE linkedin_accounts SET status='error' WHERE id=?`, [req.params.id]).catch(() => {});
-    res.status(400).json({
-      error: 'Cookie test failed — cookies may be expired or invalid. ' +
-        (err.response?.status === 401 ? '(401 Unauthorized)' : err.message),
-    });
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -170,6 +179,33 @@ router.get('/campaigns/:id/sends', async (req, res) => {
       JOIN contacts c ON ls.contact_id = c.id
       WHERE ls.campaign_id=? ORDER BY ls.scheduled_at DESC LIMIT 200
     `, [req.params.id]);
+    res.json(sends);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── LinkedIn Connection Activity (inbox) ──────────────────────────────────
+
+router.get('/inbox', async (req, res) => {
+  try {
+    const { account_id, status } = req.query;
+    let where = `la.user_id = ?`;
+    const params = [req.userId];
+    if (account_id) { where += ` AND ls.linkedin_account_id = ?`; params.push(account_id); }
+    if (status) { where += ` AND ls.status = ?`; params.push(status); }
+    const sends = await dbAll(`
+      SELECT ls.*,
+             c.first_name, c.last_name, c.company, c.linkedin, c.linkedin_connected_via,
+             la.name as account_name,
+             COALESCE(lc.name, ec.name, 'Campaign') as campaign_name
+      FROM linkedin_sends ls
+      JOIN contacts c ON ls.contact_id = c.id
+      JOIN linkedin_accounts la ON ls.linkedin_account_id = la.id
+      LEFT JOIN linkedin_campaigns lc ON ls.campaign_id = lc.id AND ls.email_campaign_id IS NULL
+      LEFT JOIN campaigns ec ON ls.email_campaign_id = ec.id
+      WHERE ${where}
+      ORDER BY COALESCE(ls.sent_at, ls.scheduled_at) DESC
+      LIMIT 300
+    `, params);
     res.json(sends);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

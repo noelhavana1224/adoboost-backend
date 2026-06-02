@@ -258,38 +258,52 @@ Score guide: 0-20=A (clean), 21-40=B (minor), 41-60=C (needs work), 61-80=D (ris
   return result;
 }
 
-// ── 4. Generate full sequence ────────────────────────────────────────────────
+// ── 4. Generate full multi-channel sequence ──────────────────────────────────
 async function generateSequence(userId, audience, offer, niche) {
   await checkCredits(userId, 'sequence');
   const { ai, mq } = getClient();
 
   const res = await ai.chat.completions.create({
     model: mq,
-    max_tokens: 1400,
+    max_tokens: 2000,
     temperature: 0.75,
     messages: [
       {
         role: 'system',
         content:
-`You are an expert B2B cold email copywriter. Generate complete 3-step cold email sequences.
+`You are an expert B2B lead generation strategist who builds high-converting multi-channel outreach sequences combining LinkedIn and email.
+
+Generate a 5-step sequence mixing LinkedIn touchpoints and emails for maximum response rates.
 
 Rules:
-- Every email: 3-5 sentences max, human conversational tone, zero spam words
-- Use {{first_name}} and {{company}} naturally where they'd fit
-- Step 1 (day 0): personal intro + specific value prop + a soft single CTA
-- Step 2 (day 3): different angle — add an insight, stat, or social proof; lighter CTA
-- Step 3 (day 7): graceful breakup email — give them an easy out, stay positive
+- Use {{first_name}} and {{company}} naturally
+- LinkedIn notes: max 280 chars, conversational, no selling
+- Emails: 3-5 sentences max, human tone, zero spam words, one soft CTA
+- Timing: space touches realistically (people need time)
 
-Return VALID JSON array only — no markdown, no code fence, no extra text:
+Recommended cadence:
+- Step 1 (day 0): LinkedIn View Profile — warm them up silently
+- Step 2 (day 1): LinkedIn Connection with a short personal note
+- Step 3 (day 3): Initial Email — intro + value prop + soft CTA
+- Step 4 (day 7): Follow-up Email — different angle, insight or social proof
+- Step 5 (day 14): Breakup Email — graceful, give them an easy out
+
+Return VALID JSON array only — no markdown, no code fence, no extra text.
+For linkedin_view steps: subject and body can be empty strings.
+For linkedin_connect steps: put the connection note in linkedin_note, subject and body empty.
+For email steps: fill subject and body normally.
+
 [
-  {"step":1,"subject":"...","body":"...","delay_days":0,"delay_hours":0},
-  {"step":2,"subject":"...","body":"...","delay_days":3,"delay_hours":0},
-  {"step":3,"subject":"...","body":"...","delay_days":7,"delay_hours":0}
+  {"step":1,"step_type":"linkedin_view","subject":"","body":"","linkedin_note":"","delay_days":0,"delay_hours":0},
+  {"step":2,"step_type":"linkedin_connect","subject":"","body":"","linkedin_note":"Hi {{first_name}}, noticed you work at {{company}}...","delay_days":1,"delay_hours":0},
+  {"step":3,"step_type":"email","subject":"Quick question for {{first_name}}","body":"Hi {{first_name}},\\n\\n...","linkedin_note":"","delay_days":3,"delay_hours":0},
+  {"step":4,"step_type":"email","subject":"...","body":"...","linkedin_note":"","delay_days":7,"delay_hours":0},
+  {"step":5,"step_type":"email","subject":"...","body":"...","linkedin_note":"","delay_days":14,"delay_hours":0}
 ]`,
       },
       {
         role: 'user',
-        content: `Generate a 3-step cold email sequence:\n- Target audience: ${audience}\n- Offer / product: ${offer}\n- Niche / industry: ${niche}`,
+        content: `Generate a 5-step multi-channel outreach sequence:\n- Target audience: ${audience}\n- Offer / product: ${offer}\n- Niche / industry: ${niche}`,
       },
     ],
   });

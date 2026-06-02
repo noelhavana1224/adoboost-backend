@@ -8,7 +8,9 @@ process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason);
 });
 
-require('dotenv').config();
+// override:true lets the app's .env file take precedence over panel-injected
+// vars, so secrets (JWT_SECRET, SMTP_ENC_KEY) can be rotated via the .env file.
+require('dotenv').config({ override: true });
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
@@ -33,6 +35,40 @@ try {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// ── Security headers (helmet) — loaded defensively so a missing dep can't crash ─
+try {
+  const helmet = require('helmet');
+  app.use(helmet({
+    contentSecurityPolicy: false,           // API only — CSP handled by frontend host
+    crossOriginResourcePolicy: { policy: 'cross-origin' }, // allow tracking pixel/uploads
+  }));
+} catch (e) { console.warn('[startup] helmet not available:', e.message); }
+
+app.set('trust proxy', 1); // behind LiteSpeed/Passenger — needed for correct client IP in rate-limit
+
+// ── Rate limiting ───────────────────────────────────────────────────────────
+let authLimiter = (req, res, next) => next();   // no-op fallback
+let apiLimiter  = (req, res, next) => next();
+try {
+  const rateLimit = require('express-rate-limit');
+  // Strict on auth: 10 attempts / 15 min per IP → blocks brute force / credential stuffing
+  authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many attempts. Please wait 15 minutes and try again.' },
+  });
+  // Looser global guard: 300 req/min per IP on the rest of the API
+  apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests — slow down.' },
+  });
+} catch (e) { console.warn('[startup] express-rate-limit not available:', e.message); }
+
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   'http://localhost:5173',
@@ -47,6 +83,10 @@ app.use(cors({
   },
   credentials: true,
 }));
+
+// ── Billing (Lemon Squeezy) — MUST mount before express.json() so the webhook
+// receives the raw body for HMAC signature verification. ──────────────────────
+try { app.use('/api/billing', require('./routes/billing')); } catch (e) { console.error('[startup] billing:', e.message); }
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -69,8 +109,15 @@ const mount = (path, router, label) => {
   catch (e) { console.error(`[startup] Failed to mount ${label}:`, e.message); }
 };
 
-// Auth routes
-try { app.use('/api/auth', require('./routes/auth')); } catch (e) { console.error('[startup] auth:', e.message); }
+// Global API rate guard — skip tracking pixels/clicks (open from shared corporate
+// IPs, must never be throttled) and the internal cron trigger.
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/tracking') || req.path.startsWith('/internal')) return next();
+  return apiLimiter(req, res, next);
+});
+
+// Auth routes — strict limiter on top of the global one (brute-force protection)
+try { app.use('/api/auth', authLimiter, require('./routes/auth')); } catch (e) { console.error('[startup] auth:', e.message); }
 try { app.use('/api/smtp-test', require('./routes/smtptest')); } catch (e) { console.error('[startup] smtptest:', e.message); }
 try { app.use('/api/auth', require('./routes/authSystem')); } catch (e) { console.error('[startup] authSystem:', e.message); }
 try { app.use('/api/ai', require('./routes/ai')); } catch (e) { console.error('[startup] ai routes:', e.message); }
@@ -159,6 +206,7 @@ const emailService    = safeRequire('./services/emailService');
 const imapService     = safeRequire('./services/imapService');
 const warmupService   = safeRequire('./services/warmupService');
 const linkedinService = safeRequire('./services/linkedinService');
+const backupService   = safeRequire('./services/backupService');
 
 if (emailService) {
   cron.schedule('*/2 * * * *', async () => {
@@ -194,6 +242,17 @@ if (linkedinService) {
     try { await linkedinService.resetLinkedInDailyCounters(); }
     catch (e) { console.error('LinkedIn counter reset error:', e.message); }
   });
+}
+
+// ── Nightly database backup ─────────────────────────────────────────────────
+// Consistent SQLite snapshot via VACUUM INTO at 3:30 AM, keeps last 14 days.
+if (backupService) {
+  cron.schedule('30 3 * * *', async () => {
+    try { await backupService.runBackup(); }
+    catch (e) { console.error('Backup error:', e.message); }
+  });
+  // Run one backup ~30s after startup so there's always a fresh snapshot
+  setTimeout(() => { backupService.runBackup().catch(() => {}); }, 30000);
 }
 
 // ── Nightly cleanup — purge soft-deleted messages older than 30 days ────────

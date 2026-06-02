@@ -3,6 +3,7 @@ const Handlebars = require('handlebars');
 const { dbAll, dbRun, dbGet } = require('../models/db');
 const { v4: uuidv4 } = require('uuid');
 const { getTzOffsetMs, getHourInTz } = require('../utils/timezone');
+const { dec } = require('../utils/crypto');
 
 const BASE_URL = () => process.env.BASE_URL || 'https://api.adobosolutions.com';
 
@@ -371,7 +372,7 @@ async function processPendingSends() {
         host:   send.host,
         port:   send.port,
         secure: send.secure === 1 || send.port === 465,
-        auth:   { user: send.username, pass: send.smtp_pass },
+        auth:   { user: send.username, pass: dec(send.smtp_pass) },
         tls:    { rejectUnauthorized: false },
       });
 

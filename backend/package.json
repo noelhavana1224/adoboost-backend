@@ -23,7 +23,9 @@
   "imap": "^0.8.19",
   "mailparser": "^3.7.1",
   "openai": "^4.98.0",
-  "axios": "^1.7.9"
+  "axios": "^1.7.9",
+  "helmet": "^7.1.0",
+  "express-rate-limit": "^7.4.0"
 
   },
   "devDependencies": {

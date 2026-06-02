@@ -11,6 +11,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const bcrypt = require('bcryptjs');
+const { enc, dec } = require('../utils/crypto');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -30,9 +31,11 @@ emailAccountsRouter.post('/', async (req, res) => {
   try {
     const { name, type='smtp', host, port, secure, username, password, from_name, from_email, daily_limit, imap_host, imap_port, imap_secure } = req.body;
     if (!username || !password || !from_email) return res.status(400).json({ error: 'username, password, from_email required' });
+    const limitCheck = await checkPlanLimit(req.effectiveUserId, 'email_accounts');
+    if (!limitCheck.ok) return res.status(403).json({ error: limitCheck.error, plan_limit: true, limit: limitCheck.limit, used: limitCheck.used });
     const id = uuidv4();
     await dbRun(`INSERT INTO email_accounts (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, req.effectiveUserId, name||from_email, type, host||'', port||587, (secure===true||secure===1||secure==='true')?1:0, username, password, from_name||'', from_email, daily_limit||100, imap_host||'', imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0]);
+      [id, req.effectiveUserId, name||from_email, type, host||'', port||587, (secure===true||secure===1||secure==='true')?1:0, username, enc(password), from_name||'', from_email, daily_limit||100, imap_host||'', imap_port||993, (imap_secure===true||imap_secure===1||imap_secure==='true')?1:0]);
     const acc = await dbGet('SELECT id,name,type,host,port,secure,username,from_name,from_email,daily_limit,status,imap_host,imap_port,imap_secure FROM email_accounts WHERE id=?', [id]);
     res.json(acc);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -120,7 +123,7 @@ emailAccountsRouter.post('/:id/test', async (req, res) => {
     const t = nodemailer.createTransport({
       host: acc.host, port: acc.port,
       secure: acc.secure === 1 || acc.port === 465,
-      auth: { user: acc.username, pass: acc.password },
+      auth: { user: acc.username, pass: dec(acc.password) },
       tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
       connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 15000,
     });
@@ -142,7 +145,7 @@ emailAccountsRouter.post('/:id/retry-smtp', async (req, res) => {
     const t = nodemailer.createTransport({
       host: acc.host, port: acc.port,
       secure: acc.secure === 1 || acc.port === 465,
-      auth: { user: acc.username, pass: acc.password },
+      auth: { user: acc.username, pass: dec(acc.password) },
       tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
       connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 15000,
     });
@@ -189,7 +192,7 @@ emailAccountsRouter.post('/bulk-retry-smtp', async (req, res) => {
         const t = nodemailer.createTransport({
           host: acc.host, port: acc.port,
           secure: acc.secure === 1 || acc.port === 465,
-          auth: { user: acc.username, pass: acc.password },
+          auth: { user: acc.username, pass: dec(acc.password) },
           tls: { rejectUnauthorized: false, minVersion: 'TLSv1' },
           connectionTimeout: 5000, greetingTimeout: 5000, socketTimeout: 5000,
         });
@@ -320,7 +323,7 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
           // For updates: host/password are optional — keep saved values if not in CSV.
           // Only fields explicitly provided in the CSV will overwrite existing values.
           // This allows a simple CSV with just (username, name) to fix names only.
-          const newPass     = password              || existing.password;
+          const newPass     = password ? enc(password) : existing.password;
           const newHost     = host                  || existing.host;
           const newPort     = host ? port           : existing.port;
           const newSecure   = host ? secure         : existing.secure;
@@ -346,13 +349,19 @@ emailAccountsRouter.post('/bulk-import', async (req, res) => {
             errors.push({ row: i + 2, email: username, reason: 'New account requires: host and password' });
             continue;
           }
+          // Enforce plan limit on NEW accounts (updates to existing are always allowed)
+          const limitCheck = await checkPlanLimit(req.effectiveUserId, 'email_accounts');
+          if (!limitCheck.ok) {
+            errors.push({ row: i + 2, email: username, reason: `Plan limit reached (${limitCheck.limit} accounts) — upgrade to add more` });
+            continue;
+          }
           const id = uuidv4();
           await dbRun(
             `INSERT INTO email_accounts
               (id,user_id,name,type,host,port,secure,username,password,from_name,from_email,daily_limit,imap_host,imap_port,imap_secure,sending_preset,emails_per_hour,delay_min,delay_max)
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [id, req.effectiveUserId, name, 'smtp', host, port, secure,
-             username, password, fromName, fromEmail, dailyLim,
+             username, enc(password), fromName, fromEmail, dailyLim,
              imapHost, imapPort, imapSec, 'moderate', 6, 60, 180]
           );
           added++;
@@ -427,8 +436,9 @@ emailAccountsRouter.put('/:id', async (req, res) => {
     const has = (k) => b[k] !== undefined;
     const bool = (v, fallback) => has(v) ? (b[v] ? 1 : 0) : fallback;
     const secureBool = (v, fallback) => has(v) ? ((b[v]===true||b[v]===1||b[v]==='true')?1:0) : fallback;
-    const newPassword = b.password ? b.password : acc.password;
-    const newImapPassword = b.imap_password ? b.imap_password : (acc.imap_password || '');
+    // Encrypt new passwords; keep stored (already-encrypted) value if unchanged
+    const newPassword = b.password ? enc(b.password) : acc.password;
+    const newImapPassword = b.imap_password ? enc(b.imap_password) : (acc.imap_password || '');
     await dbRun(`UPDATE email_accounts SET
       name=?,type=?,host=?,port=?,secure=?,
       username=?,password=?,from_name=?,from_email=?,daily_limit=?,
@@ -533,6 +543,8 @@ contactsRouter.post('/', async (req, res) => {
   try {
     const { email, first_name, last_name, company, title, phone, website, list_id, custom_fields } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
+    const limitCheck = await checkPlanLimit(req.effectiveUserId, 'contacts');
+    if (!limitCheck.ok) return res.status(403).json({ error: limitCheck.error, plan_limit: true, limit: limitCheck.limit, used: limitCheck.used });
     const id = uuidv4();
     await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
       [id, req.effectiveUserId, list_id||null, email.toLowerCase().trim(), first_name||'', last_name||'', company||'', title||'', phone||'', website||'', JSON.stringify(custom_fields||{})]);
@@ -753,6 +765,8 @@ campaignsRouter.post('/', async (req, res) => {
     const { name, email_account_id, list_id, schedule_type, scheduled_at, daily_limit, track_opens, track_clicks, sequences, rotation_account_ids,
             send_days, timezone, send_time_start, send_time_end, all_hours, start_immediately, visibility, linkedin_account_id } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
+    const limitCheck = await checkPlanLimit(req.effectiveUserId, 'campaigns');
+    if (!limitCheck.ok) return res.status(403).json({ error: limitCheck.error, plan_limit: true, limit: limitCheck.limit, used: limitCheck.used });
     const hasLinkedInSteps = sequences?.some(s => s.step_type && s.step_type !== 'email');
     if (hasLinkedInSteps) {
       const user = await dbGet('SELECT plan FROM users WHERE id=?', [req.effectiveUserId]);
@@ -1134,7 +1148,7 @@ messagesRouter.post('/:id/reply', async (req, res) => {
     const transporter = nodemailer.createTransport({
       host: acc.host, port: acc.port,
       secure: acc.secure === 1 || acc.port === 465,
-      auth: { user: acc.username, pass: acc.password },
+      auth: { user: acc.username, pass: dec(acc.password) },
       tls: { rejectUnauthorized: false },
     });
     // Subject: Forward uses Fwd:, reply uses Re: (strip duplicates)
@@ -1563,6 +1577,51 @@ adminRouter.put('/plans/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Backups (admin) ─────────────────────────────────────────────────────────
+adminRouter.get('/backups', async (req, res) => {
+  try {
+    const { listBackups } = require('../services/backupService');
+    res.json({ backups: listBackups() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+adminRouter.post('/backups/run', async (req, res) => {
+  try {
+    const { runBackup } = require('../services/backupService');
+    const result = await runBackup();
+    if (!result.success) return res.status(500).json(result);
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Encrypt existing SMTP/IMAP passwords at rest (one-time migration) ────────
+// Safe to run repeatedly — already-encrypted values are skipped.
+// Requires SMTP_ENC_KEY to be set, otherwise it's a no-op.
+adminRouter.post('/security/encrypt-secrets', async (req, res) => {
+  try {
+    const { isEncrypted, enc } = require('../utils/crypto');
+    if (!process.env.SMTP_ENC_KEY) {
+      return res.status(400).json({ error: 'SMTP_ENC_KEY is not set on the server — set it first, then run this.' });
+    }
+    const accounts = await dbAll('SELECT id, password, imap_password FROM email_accounts');
+    let encrypted = 0, skipped = 0;
+    for (const a of accounts) {
+      const updates = [];
+      const params = [];
+      if (a.password && !isEncrypted(a.password)) { updates.push('password=?'); params.push(enc(a.password)); }
+      if (a.imap_password && !isEncrypted(a.imap_password)) { updates.push('imap_password=?'); params.push(enc(a.imap_password)); }
+      if (updates.length) {
+        params.push(a.id);
+        await dbRun(`UPDATE email_accounts SET ${updates.join(', ')} WHERE id=?`, params);
+        encrypted++;
+      } else {
+        skipped++;
+      }
+    }
+    res.json({ success: true, encrypted, skipped, total: accounts.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 adminRouter.get('/tickets', async (req, res) => {
   try {
     const tickets = await dbAll(`SELECT t.*,u.name as user_name,u.email as user_email FROM tickets t JOIN users u ON t.user_id=u.id ORDER BY t.created_at DESC`, []);
@@ -1653,6 +1712,44 @@ warmupRouter.get('/stats', async (req, res) => {
 function effectiveUserMiddleware(req, res, next) {
   req.effectiveUserId = req.ownerId || req.userId;
   next();
+}
+
+// ── Plan limit enforcement ──────────────────────────────────────────────────
+// Returns { ok: true } if under limit, or { ok: false, error, limit, used } if at/over.
+// Resources: 'email_accounts' | 'campaigns' | 'contacts'
+const PLAN_ID_MAP = { trial: 'plan_trial', starter: 'plan_starter', professional: 'plan_pro', unlimited: 'plan_unlimited' };
+async function checkPlanLimit(userId, resource, addCount = 1) {
+  try {
+    const user = await dbGet('SELECT plan FROM users WHERE id=?', [userId]);
+    const planSlug = user?.plan || 'trial';
+    const planRow = await dbGet('SELECT * FROM plans WHERE id=?', [PLAN_ID_MAP[planSlug] || 'plan_trial']);
+    const limitField = {
+      email_accounts: 'max_email_accounts',
+      campaigns:      'max_campaigns',
+      contacts:       'max_contacts',
+    }[resource];
+    const tableName = { email_accounts: 'email_accounts', campaigns: 'campaigns', contacts: 'contacts' }[resource];
+    if (!limitField || !tableName) return { ok: true };
+
+    const limit = planRow?.[limitField];
+    // Unlimited / very high caps → no enforcement
+    if (limit == null || limit >= 999999) return { ok: true };
+
+    const row = await dbGet(`SELECT COUNT(*) as n FROM ${tableName} WHERE user_id=?`, [userId]);
+    const used = row?.n || 0;
+    if (used + addCount > limit) {
+      const labels = { email_accounts: 'email accounts', campaigns: 'campaigns', contacts: 'contacts' };
+      return {
+        ok: false, limit, used,
+        error: `Plan limit reached: your ${planRow?.name || planSlug} plan allows ${limit} ${labels[resource]} (you have ${used}). Upgrade your plan to add more.`,
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    // Fail-open: never block legitimate work because the check itself errored
+    console.error('[checkPlanLimit] error:', e.message);
+    return { ok: true };
+  }
 }
 
 // ── Team Members Router (client-facing) ─────────

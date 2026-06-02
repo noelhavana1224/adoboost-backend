@@ -1,5 +1,6 @@
 const { dbAll, dbGet, dbRun } = require('../models/db');
 const { v4: uuidv4 } = require('uuid');
+const { dec } = require('../utils/crypto');
 
 const AUTO_REPLY_KEYWORDS = [
   'out of office', 'auto-reply', 'automatic reply', 'autoreply',
@@ -41,7 +42,7 @@ async function syncInbox(account) {
 
   const imap = new Imap({
     user: account.username,
-    password: account.password,
+    password: dec(account.imap_password || account.password),
     host: account.imap_host,
     port: account.imap_port || 993,
     tls: account.imap_secure === 1 || account.imap_port === 993,

@@ -25,10 +25,30 @@ function extractProfileSlug(url) {
 }
 
 async function testCookies(liAt, jsessionid) {
-  const { data } = await axios.get('https://www.linkedin.com/voyager/api/me', {
-    headers: buildHeaders(liAt, jsessionid),
-    timeout: 12000,
-  });
+  let res;
+  try {
+    res = await axios.get('https://www.linkedin.com/voyager/api/me', {
+      headers: buildHeaders(liAt, jsessionid),
+      timeout: 12000,
+      maxRedirects: 0,
+      validateStatus: s => s < 400,
+    });
+  } catch (err) {
+    // Any redirect (3xx) means LinkedIn rejected the cookies and is sending to login
+    if (err.response?.status >= 300 && err.response?.status < 400) {
+      const e = new Error('Cookies are expired or invalid — LinkedIn redirected to login. Re-copy your cookies and try again.');
+      e.response = err.response;
+      throw e;
+    }
+    throw err;
+  }
+
+  // A redirect that slipped through validateStatus
+  if (res.status >= 300) {
+    throw new Error('Cookies are expired or invalid — LinkedIn redirected to login. Re-copy your cookies and try again.');
+  }
+
+  const data = res.data;
   const name = data?.included?.[0]?.firstName?.localized?.en_US || data?.data?.firstName || 'LinkedIn User';
   return { ok: true, name };
 }
@@ -70,19 +90,27 @@ async function processPendingLinkedInSends() {
   const pending = await dbAll(`
     SELECT ls.*,
            c.first_name, c.last_name, c.company, c.linkedin,
-           lc.status as campaign_status, lc.connection_note,
+           COALESCE(ls.connection_note, lc.connection_note, '') as resolved_note,
+           CASE WHEN ls.email_campaign_id IS NOT NULL THEN 'active' ELSE COALESCE(lc.status,'active') END as campaign_status,
+           la.name as account_name,
            la.li_at, la.jsessionid, la.daily_limit as acct_daily_limit, la.sent_today
     FROM linkedin_sends ls
     JOIN contacts c ON ls.contact_id = c.id
-    JOIN linkedin_campaigns lc ON ls.campaign_id = lc.id
+    LEFT JOIN linkedin_campaigns lc ON ls.campaign_id = lc.id AND ls.email_campaign_id IS NULL
     JOIN linkedin_accounts la ON ls.linkedin_account_id = la.id
     WHERE ls.status = 'pending' AND ls.scheduled_at <= ?
-    AND lc.status = 'active'
+    AND (ls.email_campaign_id IS NOT NULL OR lc.status = 'active')
     ORDER BY ls.scheduled_at ASC LIMIT 5
   `, [now]);
 
   for (const send of pending) {
     if (send.sent_today >= send.acct_daily_limit) continue;
+
+    // linkedin_view: mark done immediately, no API call needed
+    if (send.step_type === 'linkedin_view') {
+      await dbRun(`UPDATE linkedin_sends SET status='sent', sent_at=? WHERE id=?`, [new Date().toISOString(), send.id]);
+      continue;
+    }
 
     const profileUrl = send.linkedin_profile_url || send.linkedin;
     if (!profileUrl) {
@@ -97,10 +125,13 @@ async function processPendingLinkedInSends() {
     }
 
     try {
-      const note = personalize(send.connection_note, send);
+      const note = personalize(send.resolved_note, send);
       await sendConnectionRequest(send.li_at, send.jsessionid, slug, note);
-      await dbRun(`UPDATE linkedin_sends SET status='sent', sent_at=? WHERE id=?`, [new Date().toISOString(), send.id]);
+      const sentAt = new Date().toISOString();
+      await dbRun(`UPDATE linkedin_sends SET status='sent', sent_at=? WHERE id=?`, [sentAt, send.id]);
       await dbRun(`UPDATE linkedin_accounts SET sent_today = sent_today + 1 WHERE id=?`, [send.linkedin_account_id]);
+      // Auto-tag the contact as connected via this LinkedIn account
+      await dbRun(`UPDATE contacts SET linkedin_connected_via=? WHERE id=?`, [send.account_name || 'LinkedIn', send.contact_id]);
 
       // 45–120 second human-like gap
       const delay = (Math.random() * 75 + 45) * 1000;
