@@ -475,12 +475,14 @@ async function processWarmup() {
                 `, [new Date().toISOString(), _acc.id]);
               }
 
-              // Update health score
+              // Update health score — infinite warmup: score grows over 90 days
+              // then stays high as long as reply rate is good. No artificial stop.
               const replyRate = await getReplyRate(_acc.id);
-              const health = Math.min(100, Math.round(
-                (Math.min(_acc.warmup_days || 0, 30) / 30) * 50 +
-                replyRate * 50
-              ));
+              const days = _acc.warmup_days || 0;
+              // Days component: logarithmic growth — reaches ~80% at day 90,
+              // keeps slowly climbing after (never truly stops improving).
+              const dayScore = Math.min(1, Math.log10(days + 1) / Math.log10(91));
+              const health = Math.min(100, Math.round(dayScore * 50 + replyRate * 50));
               await dbRun(`UPDATE email_accounts SET warmup_health=? WHERE id=?`, [health, _acc.id]);
             }
 
