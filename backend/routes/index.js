@@ -1544,28 +1544,57 @@ adminRouter.post('/users/:id/reset-password', async (req, res) => {
 });
 
 adminRouter.delete('/users/:id', async (req, res) => {
+  const uid = req.params.id;
   try {
-    const user = await dbGet('SELECT * FROM users WHERE id=?', [req.params.id]);
-    if (!user || user.role==='admin') return res.status(400).json({ error: 'Cannot delete this user' });
-    const campaigns = await dbAll('SELECT id FROM campaigns WHERE user_id=?', [req.params.id]);
-    for (const c of campaigns) {
-      await dbRun('DELETE FROM sends WHERE campaign_id=?', [c.id]);
-      await dbRun('DELETE FROM sequences WHERE campaign_id=?', [c.id]);
+    const user = await dbGet('SELECT * FROM users WHERE id=?', [uid]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.role === 'admin') return res.status(400).json({ error: 'Cannot delete an admin account' });
+
+    // ── Collect this user's parent record ids (for indirect children) ──
+    const campaignIds = (await dbAll('SELECT id FROM campaigns WHERE user_id=?', [uid])).map(r => r.id);
+    const accountIds  = (await dbAll('SELECT id FROM email_accounts WHERE user_id=?', [uid])).map(r => r.id);
+    let liCampaignIds = [];
+    let liAccountIds  = [];
+    try { liCampaignIds = (await dbAll('SELECT id FROM linkedin_campaigns WHERE user_id=?', [uid])).map(r => r.id); } catch {}
+    try { liAccountIds  = (await dbAll('SELECT id FROM linkedin_accounts WHERE user_id=?', [uid])).map(r => r.id); } catch {}
+
+    const inClause = (ids) => ids.map(() => '?').join(',');
+    const safeDel = async (sql, params = []) => { try { await dbRun(sql, params); } catch (e) { /* table may not exist */ } };
+
+    // ── 1. Delete indirect children FIRST (rows with no user_id but FK to parents) ──
+    if (campaignIds.length) {
+      await safeDel(`DELETE FROM sends WHERE campaign_id IN (${inClause(campaignIds)})`, campaignIds);
+      await safeDel(`DELETE FROM sequences WHERE campaign_id IN (${inClause(campaignIds)})`, campaignIds);
     }
-    await dbRun('DELETE FROM campaigns WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM contacts WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM lists WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM email_accounts WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM templates WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM exclusions WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM unsubscribes WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM tickets WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM subscriptions WHERE user_id=?', [req.params.id]);
-    // FIX #3: Also delete this user's messages
-    await dbRun('DELETE FROM messages WHERE user_id=?', [req.params.id]);
-    await dbRun('DELETE FROM users WHERE id=?', [req.params.id]);
+    if (accountIds.length) {
+      await safeDel(`DELETE FROM sends WHERE email_account_id IN (${inClause(accountIds)})`, accountIds);
+      await safeDel(`DELETE FROM warmup_logs WHERE account_id IN (${inClause(accountIds)})`, accountIds);
+    }
+    if (liCampaignIds.length) {
+      await safeDel(`DELETE FROM linkedin_sends WHERE campaign_id IN (${inClause(liCampaignIds)})`, liCampaignIds);
+    }
+    if (liAccountIds.length) {
+      await safeDel(`DELETE FROM linkedin_sends WHERE linkedin_account_id IN (${inClause(liAccountIds)})`, liAccountIds);
+    }
+
+    // ── 2. Dynamically sweep EVERY table that has a user_id or owner_id column ──
+    // This future-proofs deletion against new tables (ai_usage_logs, team_members,
+    // booking_calendars, etc.) so a missing cleanup can never block user deletion again.
+    const tables = await dbAll("SELECT name FROM sqlite_master WHERE type='table' AND name != 'users'");
+    for (const { name } of tables) {
+      let cols = [];
+      try { cols = (await dbAll(`PRAGMA table_info(${name})`)).map(c => c.name); } catch { continue; }
+      if (cols.includes('user_id'))  await safeDel(`DELETE FROM ${name} WHERE user_id=?`, [uid]);
+      if (cols.includes('owner_id')) await safeDel(`DELETE FROM ${name} WHERE owner_id=?`, [uid]);
+    }
+
+    // ── 3. Finally remove the user ──
+    await dbRun('DELETE FROM users WHERE id=?', [uid]);
     res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('[admin] delete user error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 adminRouter.get('/plans', async (req, res) => {
