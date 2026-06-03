@@ -22,34 +22,52 @@ function isDisposableEmail(email) {
 
 router.post('/register', async (req, res) => {
   try {
+    // New double-opt-in flow: sign up with name + email only. The user sets
+    // their password when they click the verification link. No dashboard access
+    // until verified.
     const { name, email, password } = req.body;
-    if (!name || !email || !password) return res.status(400).json({ error: 'All fields required' });
+    if (!name || !email) return res.status(400).json({ error: 'Name and email are required' });
     const cleanEmail = email.toLowerCase().trim();
-    // Basic format + disposable-domain guard (anti-abuse)
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) return res.status(400).json({ error: 'Please enter a valid email address' });
     if (isDisposableEmail(cleanEmail)) return res.status(400).json({ error: 'Disposable email addresses are not allowed. Please use a real work email.' });
-    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    const existing = await dbGet('SELECT id FROM users WHERE LOWER(email)=?', [cleanEmail]);
-    if (existing) return res.status(409).json({ error: 'Email already registered' });
-    const hashed = await bcrypt.hash(password, 10);
+    const existing = await dbGet('SELECT id, email_verified FROM users WHERE LOWER(email)=?', [cleanEmail]);
+    if (existing) {
+      // If they signed up but never verified, resend instead of erroring
+      if (existing.email_verified === 0) {
+        const newToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
+        await dbRun('UPDATE users SET verification_token=?, verification_sent_at=? WHERE id=?', [newToken, new Date().toISOString(), existing.id]);
+        sendVerificationEmail(name, cleanEmail, newToken).catch(() => {});
+        return res.json({ pending: true, email: cleanEmail, message: 'We re-sent your verification email.' });
+      }
+      return res.status(409).json({ error: 'Email already registered. Please sign in.' });
+    }
+
     const id = uuidv4();
     const apiKey = 'ab_' + uuidv4().replace(/-/g, '');
     const userCount = (await dbGet('SELECT COUNT(*) as c FROM users', [])).c;
-    const role = userCount === 0 ? 'admin' : 'user';
-    const plan = userCount === 0 ? 'unlimited' : 'trial';
     const planExpiry = new Date();
-    planExpiry.setFullYear(planExpiry.getFullYear() + 10); // 10 years for admin
-    // First user (admin) is auto-verified; everyone else must verify their email
-    const verified = userCount === 0 ? 1 : 0;
+    planExpiry.setFullYear(planExpiry.getFullYear() + 10);
+
+    // First user ever = admin bootstrap (auto-verified, password required immediately)
+    if (userCount === 0) {
+      if (!password || password.length < 6) return res.status(400).json({ error: 'Set a password (min 6 chars) for the admin account' });
+      const hashed = await bcrypt.hash(password, 10);
+      await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key,email_verified) VALUES (?,?,?,?,?,?,?,?,1)',
+        [id, cleanEmail, hashed, name, 'admin', 'unlimited', planExpiry.toISOString(), apiKey]);
+      const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
+      return res.json({ token, user: { id, email: cleanEmail, name, role: 'admin', plan: 'unlimited', email_verified: 1 } });
+    }
+
+    // Public signup — unverified, password set at verification time
+    const placeholder = await bcrypt.hash(uuidv4(), 10); // unusable until they set a real one
     const verifyToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
-    await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key,email_verified,verification_token,verification_sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [id, cleanEmail, hashed, name, role, plan, planExpiry.toISOString(), apiKey, verified, verified ? null : verifyToken, verified ? null : new Date().toISOString()]);
-    const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
+    await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key,email_verified,verification_token,verification_sent_at) VALUES (?,?,?,?,?,?,?,?,0,?,?)',
+      [id, cleanEmail, placeholder, name, 'user', 'trial', planExpiry.toISOString(), apiKey, verifyToken, new Date().toISOString()]);
     const totalUsers = (await dbGet('SELECT COUNT(*) as c FROM users', [])).c;
-    if (!verified) sendVerificationEmail(name, cleanEmail, verifyToken).catch(() => {});
-    sendWelcomeEmail(name, cleanEmail).catch(() => {});
-    sendNewUserAlert(name, cleanEmail, plan, totalUsers).catch(() => {});
-    res.json({ token, user: { id, email: cleanEmail, name, role, plan, email_verified: verified } });
+    sendVerificationEmail(name, cleanEmail, verifyToken).catch(() => {});
+    sendNewUserAlert(name, cleanEmail, 'trial', totalUsers).catch(() => {});
+    // No token returned → cannot enter the dashboard until verified
+    res.json({ pending: true, email: cleanEmail, message: 'Check your email to verify your address and set your password.' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -64,6 +82,10 @@ router.post('/login', async (req, res) => {
     if (user) {
       // Regular user login
       if (user.is_suspended) return res.status(403).json({ error: 'Account suspended. Contact support.' });
+      // Block dashboard access until email is verified (password is set at verification)
+      if (user.email_verified === 0) {
+        return res.status(403).json({ error: 'Please verify your email first. Check your inbox for the verification link to set your password and activate your account.', email_unverified: true, email: user.email });
+      }
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
       await dbRun('UPDATE users SET last_login=? WHERE id=?', [new Date().toISOString(), user.id]);
@@ -113,34 +135,57 @@ router.post('/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Verify email via token (from the link in the verification email) ────────
+// ── Check a verification token is valid (verify page loads it first) ────────
+router.get('/verify-token', async (req, res) => {
+  try {
+    const { token } = req.query;
+    if (!token) return res.json({ valid: false });
+    const user = await dbGet('SELECT email, name FROM users WHERE verification_token=?', [token]);
+    if (!user) return res.json({ valid: false });
+    res.json({ valid: true, email: user.email, name: user.name });
+  } catch { res.json({ valid: false }); }
+});
+
+// ── Verify email + set password (from the link), then auto-login ────────────
 router.post('/verify-email', async (req, res) => {
   try {
-    const { token } = req.body;
+    const { token, password } = req.body;
     if (!token) return res.status(400).json({ error: 'Missing token' });
-    const user = await dbGet('SELECT id, email_verified FROM users WHERE verification_token=?', [token]);
+    const user = await dbGet('SELECT id, name, email, role, plan, email_verified FROM users WHERE verification_token=?', [token]);
     if (!user) return res.status(400).json({ error: 'Invalid or expired verification link' });
-    if (!user.email_verified) {
-      await dbRun('UPDATE users SET email_verified=1, verification_token=NULL WHERE id=?', [user.id]);
-    }
-    res.json({ success: true, message: 'Email verified! You can now send campaigns.' });
+    if (!password || password.length < 6) return res.status(400).json({ error: 'Please set a password (at least 6 characters)' });
+
+    const hashed = await bcrypt.hash(password, 10);
+    await dbRun('UPDATE users SET email_verified=1, verification_token=NULL, password=?, last_login=? WHERE id=?',
+      [hashed, new Date().toISOString(), user.id]);
+    // Welcome email now that they're fully set up
+    sendWelcomeEmail(user.name, user.email).catch(() => {});
+    // Auto-login
+    const jwtToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({
+      success: true,
+      token: jwtToken,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, plan: user.plan, email_verified: 1 },
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Resend verification email (must be logged in) ───────────────────────────
-router.post('/resend-verification', authMiddleware, async (req, res) => {
+// ── Resend verification email (public — by email, anti-enumeration) ─────────
+router.post('/resend-verification', async (req, res) => {
   try {
-    const user = await dbGet('SELECT id, name, email, email_verified, verification_sent_at FROM users WHERE id=?', [req.userId]);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.email_verified) return res.json({ success: true, message: 'Already verified' });
+    const email = (req.body.email || '').toLowerCase().trim();
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const user = await dbGet('SELECT id, name, email, email_verified, verification_sent_at FROM users WHERE LOWER(email)=?', [email]);
+    // Always respond OK to avoid leaking which emails exist
+    if (!user || user.email_verified) return res.json({ success: true });
     // Throttle: at most once per 60s
     if (user.verification_sent_at && Date.now() - new Date(user.verification_sent_at).getTime() < 60000) {
-      return res.status(429).json({ error: 'Please wait a minute before requesting another email.' });
+      return res.json({ success: true });
     }
     const verifyToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
     await dbRun('UPDATE users SET verification_token=?, verification_sent_at=? WHERE id=?', [verifyToken, new Date().toISOString(), user.id]);
-    await sendVerificationEmail(user.name, user.email, verifyToken);
-    res.json({ success: true, message: 'Verification email sent.' });
+    sendVerificationEmail(user.name, user.email, verifyToken).catch(() => {});
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
