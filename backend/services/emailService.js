@@ -285,6 +285,40 @@ async function getSentLastHour(emailAccountId) {
   return row?.count || 0;
 }
 
+// ── Weighted inbox rotation by health + remaining capacity ──────────────────
+// Instead of picking a random inbox, route more volume to healthier inboxes
+// with more daily capacity left, and skip errored / at-capacity ones entirely.
+//
+//   weight = healthFactor × capacityFactor
+//   • healthFactor   : warmed inboxes use their warmup_health (floored at 10 so a
+//                      new warmup isn't starved); non-warmup inboxes are neutral (1.0)
+//   • capacityFactor : remaining daily capacity ÷ daily limit (0 when at cap)
+//
+// This de-prioritizes degraded inboxes automatically (QuickMail-style) while
+// still working for users who don't run warmup at all.
+function pickWeightedAccount(pool, hourlyCache = {}) {
+  const candidates = [];
+  for (const a of pool) {
+    if (a.status && a.status !== 'active') continue;            // skip errored/inactive
+    const limit = a.daily_limit || 50;
+    const remaining = limit - (a.sent_today || 0);
+    if (remaining <= 0) continue;                               // at daily cap
+    const perHour = a.emails_per_hour || 10;
+    if (hourlyCache[a.id] != null && hourlyCache[a.id] >= perHour) continue; // hourly full
+    const healthFactor   = a.warmup_enabled
+      ? Math.max(10, Math.min(100, a.warmup_health || 0)) / 100
+      : 1.0;
+    const capacityFactor = remaining / limit;
+    const weight = healthFactor * capacityFactor;
+    if (weight > 0) candidates.push({ a, weight });
+  }
+  if (!candidates.length) return null;
+  const total = candidates.reduce((s, c) => s + c.weight, 0);
+  let r = Math.random() * total;
+  for (const c of candidates) { r -= c.weight; if (r <= 0) return c.a; }
+  return candidates[candidates.length - 1].a;
+}
+
 // ── Main send processor (called by cron every 2 min) ──
 async function processPendingSends() {
   const now = new Date().toISOString();
@@ -316,19 +350,28 @@ async function processPendingSends() {
 
   // Per-account hourly counters (cached for this batch)
   const hourlyCache = {};
+  // Rotation pool accounts cached per rotation signature (avoids re-querying)
+  const poolCache = {};
 
   for (let send of pending) {
-    // ── Inbox rotation: pick a random account if configured ──
+    // ── Inbox rotation: weighted by health + remaining capacity ──
     if (send.rotation_account_ids) {
       try {
         const rotIds = JSON.parse(send.rotation_account_ids || '[]');
         if (rotIds.length > 1) {
-          const randomId = rotIds[Math.floor(Math.random() * rotIds.length)];
-          if (randomId !== send.email_account_id) {
-            const rotAcc = await dbGet(`SELECT * FROM email_accounts WHERE id=?`, [randomId]);
-            if (rotAcc && rotAcc.sent_today < (rotAcc.daily_limit || 50)) {
-              send = { ...send, ...rotAcc, email_account_id: rotAcc.id, acc_limit: rotAcc.daily_limit || 50, smtp_pass: rotAcc.password };
-            }
+          const key = send.rotation_account_ids;
+          if (!poolCache[key]) {
+            poolCache[key] = await dbAll(
+              `SELECT * FROM email_accounts WHERE id IN (${rotIds.map(() => '?').join(',')})`,
+              rotIds
+            );
+          }
+          // Refresh sent_today from the live batch state isn't tracked here, but
+          // the pool rows carry sent_today from their last load — good enough for
+          // weighting; the hard daily/hourly checks below are the real guardrails.
+          const chosen = pickWeightedAccount(poolCache[key], hourlyCache);
+          if (chosen && chosen.id !== send.email_account_id) {
+            send = { ...send, ...chosen, email_account_id: chosen.id, acc_limit: chosen.daily_limit || 50, smtp_pass: chosen.password };
           }
         }
       } catch {}
@@ -390,6 +433,12 @@ async function processPendingSends() {
         [send.email_account_id]);
 
       hourlyCache[send.email_account_id] = (hourlyCache[send.email_account_id] || 0) + 1;
+      // Keep the rotation pool cache in sync so weighting reflects this send
+      // within the same batch (prevents over-loading one inbox in a burst).
+      for (const k of Object.keys(poolCache)) {
+        const row = poolCache[k].find(a => a.id === send.email_account_id);
+        if (row) row.sent_today = (row.sent_today || 0) + 1;
+      }
       console.log(`✅ Sent → ${send.email} via ${send.from_email} [${hourlyCache[send.email_account_id]}/${emailsPerHour} this hour]`);
 
       // Small SMTP recovery pause (2-5s) — not the main rate-limiter
