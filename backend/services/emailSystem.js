@@ -195,6 +195,42 @@ async function sendResetEmail(name, email, token) {
   } catch (e) { console.error(`❌ Reset email failed:`, e.message); throw e; }
 }
 
+function verificationEmail(name, email, token) {
+  const verifyUrl = `${BASE_URL()}/verify-email?token=${token}`;
+  return {
+    from: FROM,
+    to: email,
+    subject: '✅ Verify your AdoBoost email',
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;background:#f8fafc;padding:32px 20px">
+        <div style="background:#0D47A1;border-radius:12px;padding:28px;text-align:center;margin-bottom:24px">
+          <div style="font-family:Georgia,serif;font-size:28px;font-weight:800;color:#fff">ado<span style="color:#FCD116">boost</span></div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:3px;margin-top:4px">BY ADOBO SOLUTIONS</div>
+        </div>
+        <div style="background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
+          <h2 style="color:#1a202c;font-size:22px;margin:0 0 12px">Confirm your email, ${name} 👋</h2>
+          <p style="color:#4a5568;line-height:1.7;margin:0 0 16px">Welcome to AdoBoost! Please verify your email address to unlock sending campaigns. It takes one click.</p>
+          <a href="${verifyUrl}" style="display:inline-block;background:#16a34a;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;margin:8px 0 20px">
+            ✅ Verify My Email
+          </a>
+          <p style="color:#718096;font-size:13px;margin:16px 0 0">Or paste this link into your browser:<br/><a href="${verifyUrl}" style="color:#0D47A1;word-break:break-all">${verifyUrl}</a></p>
+          <hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0"/>
+          <p style="color:#718096;font-size:13px;margin:0">If you didn't create an AdoBoost account, you can safely ignore this email.</p>
+        </div>
+        <p style="text-align:center;font-size:11px;color:#a0aec0;margin-top:20px">AdoBoost by Adobo Solutions · <a href="${BASE_URL()}" style="color:#a0aec0">adobosolutions.com</a></p>
+      </div>
+    `,
+  };
+}
+
+async function sendVerificationEmail(name, email, token) {
+  try {
+    const mailer = createSystemMailer();
+    await mailer.sendMail(verificationEmail(name, email, token));
+    console.log(`✅ Verification email sent to ${email}`);
+  } catch (e) { console.error(`❌ Verification email failed:`, e.message); throw e; }
+}
+
 async function sendTeamInviteEmail(inviterName, memberName, email, password, isAdmin = false) {
   try {
     const mailer = createSystemMailer();
@@ -425,4 +461,4 @@ async function sendWarmupDisconnectAlert(userEmail, userName, inboxEmail, inboxN
   } catch (e) { console.error(`❌ Warmup disconnect alert failed:`, e.message); throw e; }
 }
 
-module.exports = { createSystemMailer, sendWelcomeEmail, sendResetEmail, sendTeamInviteEmail, sendSystemEmail, sendNewUserAlert, sendBookingConfirmation, sendBookingAlert, sendWarmupDisconnectAlert };
+module.exports = { createSystemMailer, sendWelcomeEmail, sendResetEmail, sendVerificationEmail, sendTeamInviteEmail, sendSystemEmail, sendNewUserAlert, sendBookingConfirmation, sendBookingAlert, sendWarmupDisconnectAlert };

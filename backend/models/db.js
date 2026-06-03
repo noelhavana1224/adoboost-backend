@@ -437,6 +437,11 @@ function runMigrations() {
     `ALTER TABLE email_accounts ADD COLUMN imap_password TEXT DEFAULT ''`,
     // ── Warmup inbox separation — flags emails from AdoBoost warmup network ──
     `ALTER TABLE messages ADD COLUMN is_warmup INTEGER DEFAULT 0`,
+    // ── Email verification (anti-abuse) — DEFAULT 1 so all EXISTING users are
+    //    auto-verified; registration explicitly sets 0 for NEW signups. ──
+    `ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1`,
+    `ALTER TABLE users ADD COLUMN verification_token TEXT`,
+    `ALTER TABLE users ADD COLUMN verification_sent_at DATETIME`,
   ];
 
   for (const sql of migrations) {

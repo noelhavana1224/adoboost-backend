@@ -831,6 +831,11 @@ campaignsRouter.put('/:id', async (req, res) => {
 
 campaignsRouter.post('/:id/launch', async (req, res) => {
   try {
+    // Anti-abuse gate: the account owner must have a verified email before sending
+    const owner = await dbGet('SELECT email_verified FROM users WHERE id=?', [req.effectiveUserId]);
+    if (owner && owner.email_verified === 0) {
+      return res.status(403).json({ error: 'Please verify your email address before launching campaigns. Check your inbox for the verification link.', email_unverified: true });
+    }
     const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (!c) return res.status(404).json({ error: 'Not found' });
     if (!c.list_id) return res.status(400).json({ error: 'Select a contact list first' });

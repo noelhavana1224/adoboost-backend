@@ -4,14 +4,32 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { dbGet, dbAll, dbRun } = require('../models/db');
 const { JWT_SECRET, authMiddleware } = require('../middleware/auth');
-const { sendWelcomeEmail, sendNewUserAlert } = require('../services/emailSystem');
+const { sendWelcomeEmail, sendNewUserAlert, sendVerificationEmail } = require('../services/emailSystem');
 const router = express.Router();
+
+// ── Anti-abuse: block disposable / throwaway email providers on signup ──────
+const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com','guerrillamail.com','10minutemail.com','tempmail.com','temp-mail.org',
+  'throwawaymail.com','yopmail.com','getnada.com','trashmail.com','sharklasers.com',
+  'guerrillamailblock.com','dispostable.com','maildrop.cc','fakeinbox.com','mailnesia.com',
+  'tempinbox.com','mintemail.com','mohmal.com','emailondeck.com','spamgourmet.com',
+  'mailcatch.com','tempr.email','moakt.com','luxusmail.org','inboxbear.com','emailfake.com',
+]);
+function isDisposableEmail(email) {
+  const domain = (email.split('@')[1] || '').toLowerCase().trim();
+  return DISPOSABLE_DOMAINS.has(domain);
+}
 
 router.post('/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!name || !email || !password) return res.status(400).json({ error: 'All fields required' });
-    const existing = await dbGet('SELECT id FROM users WHERE email=?', [email]);
+    const cleanEmail = email.toLowerCase().trim();
+    // Basic format + disposable-domain guard (anti-abuse)
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) return res.status(400).json({ error: 'Please enter a valid email address' });
+    if (isDisposableEmail(cleanEmail)) return res.status(400).json({ error: 'Disposable email addresses are not allowed. Please use a real work email.' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const existing = await dbGet('SELECT id FROM users WHERE LOWER(email)=?', [cleanEmail]);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
     const hashed = await bcrypt.hash(password, 10);
     const id = uuidv4();
@@ -21,13 +39,17 @@ router.post('/register', async (req, res) => {
     const plan = userCount === 0 ? 'unlimited' : 'trial';
     const planExpiry = new Date();
     planExpiry.setFullYear(planExpiry.getFullYear() + 10); // 10 years for admin
-    await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key) VALUES (?,?,?,?,?,?,?,?)',
-      [id, email, hashed, name, role, plan, planExpiry.toISOString(), apiKey]);
+    // First user (admin) is auto-verified; everyone else must verify their email
+    const verified = userCount === 0 ? 1 : 0;
+    const verifyToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
+    await dbRun('INSERT INTO users (id,email,password,name,role,plan,plan_expires_at,api_key,email_verified,verification_token,verification_sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [id, cleanEmail, hashed, name, role, plan, planExpiry.toISOString(), apiKey, verified, verified ? null : verifyToken, verified ? null : new Date().toISOString()]);
     const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
     const totalUsers = (await dbGet('SELECT COUNT(*) as c FROM users', [])).c;
-    sendWelcomeEmail(name, email).catch(() => {});
-    sendNewUserAlert(name, email, plan, totalUsers).catch(() => {});
-    res.json({ token, user: { id, email, name, role, plan: 'trial' } });
+    if (!verified) sendVerificationEmail(name, cleanEmail, verifyToken).catch(() => {});
+    sendWelcomeEmail(name, cleanEmail).catch(() => {});
+    sendNewUserAlert(name, cleanEmail, plan, totalUsers).catch(() => {});
+    res.json({ token, user: { id, email: cleanEmail, name, role, plan, email_verified: verified } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -46,7 +68,7 @@ router.post('/login', async (req, res) => {
       if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
       await dbRun('UPDATE users SET last_login=? WHERE id=?', [new Date().toISOString(), user.id]);
       const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
-      return res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
+      return res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, plan: user.plan, email_verified: user.email_verified ?? 1 } });
     }
 
     // Check team_members table — fetch ALL rows with this email (same person can be on multiple accounts)
@@ -91,10 +113,41 @@ router.post('/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Verify email via token (from the link in the verification email) ────────
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Missing token' });
+    const user = await dbGet('SELECT id, email_verified FROM users WHERE verification_token=?', [token]);
+    if (!user) return res.status(400).json({ error: 'Invalid or expired verification link' });
+    if (!user.email_verified) {
+      await dbRun('UPDATE users SET email_verified=1, verification_token=NULL WHERE id=?', [user.id]);
+    }
+    res.json({ success: true, message: 'Email verified! You can now send campaigns.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Resend verification email (must be logged in) ───────────────────────────
+router.post('/resend-verification', authMiddleware, async (req, res) => {
+  try {
+    const user = await dbGet('SELECT id, name, email, email_verified, verification_sent_at FROM users WHERE id=?', [req.userId]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.email_verified) return res.json({ success: true, message: 'Already verified' });
+    // Throttle: at most once per 60s
+    if (user.verification_sent_at && Date.now() - new Date(user.verification_sent_at).getTime() < 60000) {
+      return res.status(429).json({ error: 'Please wait a minute before requesting another email.' });
+    }
+    const verifyToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '');
+    await dbRun('UPDATE users SET verification_token=?, verification_sent_at=? WHERE id=?', [verifyToken, new Date().toISOString(), user.id]);
+    await sendVerificationEmail(user.name, user.email, verifyToken);
+    res.json({ success: true, message: 'Verification email sent.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     // Try users table first
-    let user = await dbGet('SELECT id,email,name,role,plan,plan_expires_at,timezone,notify_replies,can_spam_footer,custom_unsubscribe_text,company,country,city,api_key,created_at,last_login FROM users WHERE id=?', [req.userId]);
+    let user = await dbGet('SELECT id,email,name,role,plan,plan_expires_at,email_verified,timezone,notify_replies,can_spam_footer,custom_unsubscribe_text,company,country,city,api_key,created_at,last_login FROM users WHERE id=?', [req.userId]);
     if (user) return res.json(user);
     // Try team_members table
     const member = await dbGet('SELECT * FROM team_members WHERE id=?', [req.userId]);
