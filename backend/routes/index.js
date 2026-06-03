@@ -640,6 +640,54 @@ contactsRouter.post('/bulk-move', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Email verification (bounce protection) ──────────────────────────────────
+// Start a background verification of a list (or all contacts), poll for status.
+contactsRouter.post('/verify', async (req, res) => {
+  try {
+    const { list_id } = req.body;
+    const { startVerifyJob } = require('../services/emailVerifyService');
+    const jobId = startVerifyJob(req.effectiveUserId, list_id || null);
+    res.json({ jobId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+contactsRouter.get('/verify-status/:jobId', async (req, res) => {
+  try {
+    const { getJob } = require('../services/emailVerifyService');
+    const job = getJob(req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    res.json(job);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Verification summary for a list (counts by status)
+contactsRouter.get('/verify-summary', async (req, res) => {
+  try {
+    const { list_id } = req.query;
+    const where = list_id ? 'user_id=? AND list_id=?' : 'user_id=?';
+    const params = list_id ? [req.effectiveUserId, list_id] : [req.effectiveUserId];
+    const rows = await dbAll(`SELECT COALESCE(email_status,'unverified') as s, COUNT(*) as n FROM contacts WHERE ${where} GROUP BY s`, params);
+    const summary = { unverified: 0, valid: 0, risky: 0, invalid: 0 };
+    rows.forEach(r => { summary[r.s] = r.n; });
+    res.json(summary);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete all invalid contacts (cleanup after verification)
+contactsRouter.post('/delete-invalid', async (req, res) => {
+  try {
+    const { list_id } = req.body;
+    const where = list_id ? 'user_id=? AND list_id=?' : 'user_id=?';
+    const params = list_id ? [req.effectiveUserId, list_id] : [req.effectiveUserId];
+    const invalid = await dbAll(`SELECT id FROM contacts WHERE ${where} AND email_status='invalid'`, params);
+    for (const c of invalid) {
+      await dbRun('DELETE FROM sends WHERE contact_id=?', [c.id]);
+      await dbRun('DELETE FROM contacts WHERE id=? AND user_id=?', [c.id, req.effectiveUserId]);
+    }
+    res.json({ success: true, deleted: invalid.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 contactsRouter.post('/bulk-delete', async (req, res) => {
   try {
     const { ids, force = false } = req.body;
@@ -854,8 +902,14 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     const existingSends = await dbGet(`SELECT id FROM sends WHERE campaign_id=? AND status IN ('pending','sent') LIMIT 1`, [c.id]);
     if (existingSends) return res.status(400).json({ error: 'Campaign already launched. Use retry-failed or create a new campaign.' });
 
-    const contacts = await dbAll('SELECT * FROM contacts WHERE list_id=? AND unsubscribed=0 AND bounced=0 AND user_id=?', [c.list_id, req.effectiveUserId]);
-    if (!contacts.length) return res.status(400).json({ error: 'No active contacts in list' });
+    // Bounce protection: never send to addresses verified as invalid (bad format
+    // or domain with no mail server). 'risky' and 'unverified' are still sent.
+    const contacts = await dbAll(
+      `SELECT * FROM contacts WHERE list_id=? AND unsubscribed=0 AND bounced=0 AND user_id=?
+       AND (email_status IS NULL OR email_status != 'invalid')`,
+      [c.list_id, req.effectiveUserId]
+    );
+    if (!contacts.length) return res.status(400).json({ error: 'No active contacts in list (invalid emails are skipped to protect deliverability)' });
 
     // Fetch account settings + user timezone for humanized scheduling
     const emailAccount = await dbGet('SELECT * FROM email_accounts WHERE id=?', [c.email_account_id]);

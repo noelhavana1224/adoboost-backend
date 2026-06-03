@@ -444,6 +444,10 @@ function runMigrations() {
     `ALTER TABLE users ADD COLUMN verification_sent_at DATETIME`,
     // ── Onboarding checklist dismissal ──
     `ALTER TABLE users ADD COLUMN onboarding_dismissed INTEGER DEFAULT 0`,
+    // ── Contact email verification (bounce protection) ──
+    `ALTER TABLE contacts ADD COLUMN email_status TEXT DEFAULT 'unverified'`,
+    `ALTER TABLE contacts ADD COLUMN email_check_reason TEXT`,
+    `ALTER TABLE contacts ADD COLUMN email_checked_at DATETIME`,
   ];
 
   for (const sql of migrations) {
