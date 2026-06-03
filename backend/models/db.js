@@ -442,6 +442,8 @@ function runMigrations() {
     `ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1`,
     `ALTER TABLE users ADD COLUMN verification_token TEXT`,
     `ALTER TABLE users ADD COLUMN verification_sent_at DATETIME`,
+    // ── Onboarding checklist dismissal ──
+    `ALTER TABLE users ADD COLUMN onboarding_dismissed INTEGER DEFAULT 0`,
   ];
 
   for (const sql of migrations) {

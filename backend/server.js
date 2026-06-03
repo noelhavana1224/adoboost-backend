@@ -12,6 +12,10 @@ process.on('unhandledRejection', (reason) => {
 // bare dotenv.config() silently finds nothing). override:true lets this file
 // take precedence over panel-injected vars so secrets can be rotated here.
 require('dotenv').config({ override: true, path: require('path').join(__dirname, '.env') });
+// Persistent secrets (JWT_SECRET, SMTP_ENC_KEY) from the data dir — the app-dir
+// .env is unreliable here, so this guarantees a stable strong secret survives
+// redeploys/panel resets. MUST run before routes/middleware capture the values.
+try { require('./utils/loadSecrets')(); } catch (e) { console.error('[startup] loadSecrets:', e.message); }
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
@@ -124,6 +128,7 @@ try { app.use('/api/auth', require('./routes/authSystem')); } catch (e) { consol
 try { app.use('/api/ai', require('./routes/ai')); } catch (e) { console.error('[startup] ai routes:', e.message); }
 try { app.use('/api/linkedin', require('./routes/linkedin')); } catch (e) { console.error('[startup] linkedin:', e.message); }
 try { app.use('/api/blacklist', require('./routes/blacklist')); } catch (e) { console.error('[startup] blacklist:', e.message); }
+try { app.use('/api/onboarding', require('./routes/onboarding')); } catch (e) { console.error('[startup] onboarding:', e.message); }
 
 mount('/api/email-accounts', emailAccountsRouter,  'emailAccountsRouter');
 mount('/api/contacts',       contactsRouter,        'contactsRouter');
