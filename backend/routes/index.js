@@ -1463,6 +1463,60 @@ ticketsRouter.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Lead-List Requests (done-for-you list building) ─────────────────────────
+const listRequestsRouter = express.Router();
+listRequestsRouter.use(authMiddleware);
+listRequestsRouter.use(effectiveUserMiddleware);
+
+listRequestsRouter.get('/', async (req, res) => {
+  try {
+    const rows = await dbAll('SELECT * FROM list_requests WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+listRequestsRouter.post('/', async (req, res) => {
+  try {
+    const { industries, job_titles, locations, company_size, target_count, keywords, notes } = req.body;
+    if (!industries && !job_titles) return res.status(400).json({ error: 'Tell us at least the industry or job titles you want to target.' });
+    const id = uuidv4();
+    await dbRun(
+      `INSERT INTO list_requests (id,user_id,industries,job_titles,locations,company_size,target_count,keywords,notes,status)
+       VALUES (?,?,?,?,?,?,?,?,?,'pending')`,
+      [id, req.effectiveUserId, industries||'', job_titles||'', locations||'', company_size||'', parseInt(target_count)||250, keywords||'', notes||'']
+    );
+    // Notify the admin team
+    try {
+      const u = await dbGet('SELECT name,email FROM users WHERE id=?', [req.effectiveUserId]);
+      const { sendSystemEmail } = require('../services/emailSystem');
+      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'noel@adobosolutions.com';
+      sendSystemEmail(adminEmail, `📋 New lead-list request from ${u?.name||u?.email}`,
+        `<h3>New Lead-List Request</h3>
+         <p><b>From:</b> ${u?.name||''} &lt;${u?.email||''}&gt;</p>
+         <ul>
+           <li><b>Industries:</b> ${industries||'—'}</li>
+           <li><b>Job titles:</b> ${job_titles||'—'}</li>
+           <li><b>Locations:</b> ${locations||'—'}</li>
+           <li><b>Company size:</b> ${company_size||'—'}</li>
+           <li><b>Target count:</b> ${target_count||250}</li>
+           <li><b>Keywords:</b> ${keywords||'—'}</li>
+           <li><b>Notes:</b> ${notes||'—'}</li>
+         </ul>
+         <p>Manage it in Admin → Lead Requests.</p>`).catch(()=>{});
+    } catch {}
+    res.json({ success: true, id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+listRequestsRouter.post('/:id/cancel', async (req, res) => {
+  try {
+    const r = await dbRun(`UPDATE list_requests SET status='cancelled', updated_at=? WHERE id=? AND user_id=? AND status='pending'`,
+      [new Date().toISOString(), req.params.id, req.effectiveUserId]);
+    if (!r.changes) return res.status(400).json({ error: 'Only pending requests can be cancelled.' });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Analytics ───────────────────────────────────
 const analyticsRouter = express.Router();
 analyticsRouter.use(authMiddleware);
@@ -1809,6 +1863,31 @@ adminRouter.put('/plans/:id', async (req, res) => {
     const { name, price_monthly, max_contacts, max_campaigns, max_emails_per_day, max_email_accounts, max_ai_credits, features } = req.body;
     await dbRun('UPDATE plans SET name=?,price_monthly=?,max_contacts=?,max_campaigns=?,max_emails_per_day=?,max_email_accounts=?,max_ai_credits=?,features=? WHERE id=?',
       [name, price_monthly, max_contacts, max_campaigns, max_emails_per_day, max_email_accounts, max_ai_credits ?? 10, JSON.stringify(features || []), req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Lead-list requests (admin) ──────────────────────────────────────────────
+adminRouter.get('/list-requests', async (req, res) => {
+  try {
+    const rows = await dbAll(`
+      SELECT lr.*, u.name as user_name, u.email as user_email
+      FROM list_requests lr LEFT JOIN users u ON lr.user_id=u.id
+      ORDER BY CASE lr.status WHEN 'pending' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, lr.created_at DESC`);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+adminRouter.put('/list-requests/:id', async (req, res) => {
+  try {
+    const { status, admin_notes, delivered_count } = req.body;
+    const cur = await dbGet('SELECT * FROM list_requests WHERE id=?', [req.params.id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    const deliveredAt = status === 'delivered' ? new Date().toISOString() : cur.delivered_at;
+    await dbRun(
+      `UPDATE list_requests SET status=?, admin_notes=?, delivered_count=?, delivered_at=?, updated_at=? WHERE id=?`,
+      [status ?? cur.status, admin_notes ?? cur.admin_notes, delivered_count ?? cur.delivered_count, deliveredAt, new Date().toISOString(), req.params.id]
+    );
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2454,4 +2533,4 @@ internalRouter.post('/trigger-warmup', requireCronSecret, async (req, res) => {
     console.error('❌ Warmup failed:', e.message);
   }
 });
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter, usageRouter };
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter, usageRouter };

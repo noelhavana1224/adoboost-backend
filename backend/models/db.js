@@ -163,6 +163,17 @@ function initSchema() {
       status TEXT DEFAULT 'pending', scheduled_at DATETIME,
       sent_at DATETIME, error_message TEXT)`);
 
+    // Lead-list requests (done-for-you list building)
+    db.run(`CREATE TABLE IF NOT EXISTS list_requests (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      industries TEXT, job_titles TEXT, locations TEXT,
+      company_size TEXT, target_count INTEGER DEFAULT 250,
+      keywords TEXT, notes TEXT,
+      status TEXT DEFAULT 'pending',
+      admin_notes TEXT, delivered_count INTEGER DEFAULT 0, delivered_list_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME, delivered_at DATETIME)`);
+
     // Blacklist / DNSBL monitoring — one cached row per sending domain
     db.run(`CREATE TABLE IF NOT EXISTS blacklist_status (
       domain TEXT PRIMARY KEY,
