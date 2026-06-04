@@ -448,6 +448,8 @@ function runMigrations() {
     `ALTER TABLE contacts ADD COLUMN email_status TEXT DEFAULT 'unverified'`,
     `ALTER TABLE contacts ADD COLUMN email_check_reason TEXT`,
     `ALTER TABLE contacts ADD COLUMN email_checked_at DATETIME`,
+    // ── AI reply categorization (auto lead-flagging) ──
+    `ALTER TABLE messages ADD COLUMN ai_category TEXT`,
   ];
 
   for (const sql of migrations) {

@@ -1005,18 +1005,23 @@ messagesRouter.use(effectiveUserMiddleware);
 
 messagesRouter.get('/inbox', async (req, res) => {
   try {
-    const { search, status, tag, page=1, limit=20 } = req.query;
+    const { search, status, tag, category, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
     // Exclude warmup emails — they go to the dedicated Warmer Inbox
     let where=['m.user_id=?','m.is_auto_reply=0','(m.is_warmup=0 OR m.is_warmup IS NULL)','(m.archived=0 OR m.archived IS NULL)','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
     if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ?)'); const s=`%${search}%`; params.push(s,s); }
     if (status) { where.push('m.status=?'); params.push(status); }
     if (tag) { where.push('m.tag=?'); params.push(tag); }
+    if (category) { where.push('m.ai_category=?'); params.push(category); }
     const w='WHERE '+where.join(' AND ');
     const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
     const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND (m.is_warmup=0 OR m.is_warmup IS NULL) AND m.status='unread' AND (m.deleted=0 OR m.deleted IS NULL)`, [req.effectiveUserId])).n;
-    res.json({ messages, total, page: Number(page), unread });
+    // AI category counts (for the smart-filter chips) — over the whole inbox, ignoring the category filter
+    const catRows = await dbAll(`SELECT COALESCE(ai_category,'uncategorized') as c, COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND (m.is_warmup=0 OR m.is_warmup IS NULL) AND (m.archived=0 OR m.archived IS NULL) AND (m.deleted=0 OR m.deleted IS NULL) GROUP BY ai_category`, [req.effectiveUserId]);
+    const categories = {};
+    catRows.forEach(r => { categories[r.c] = r.n; });
+    res.json({ messages, total, page: Number(page), unread, categories });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -231,6 +231,11 @@ if (imapService) {
   cron.schedule('*/5 * * * *', async () => {
     try { await imapService.syncAllInboxes(); }
     catch (e) { console.error('IMAP sync error:', e.message); }
+    // After sync, AI-categorize any new replies (auto lead-flagging)
+    try {
+      const aiSvc = safeRequire('./services/aiService');
+      if (aiSvc?.categorizeInboxMessages) await aiSvc.categorizeInboxMessages(30);
+    } catch (e) { console.error('AI categorize error:', e.message); }
   });
 }
 

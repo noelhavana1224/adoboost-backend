@@ -361,6 +361,63 @@ Each reply: 1-3 sentences, sound like a real human, no corporate-speak.`,
   return replies;
 }
 
+// ── AI reply categorization (automatic lead-flagging) ───────────────────────
+// Runs automatically on incoming replies — NOT credit-gated (it's a system
+// feature, uses the cheap/fast model with a tiny output).
+const REPLY_CATEGORIES = ['interested', 'positive', 'not_now', 'not_interested', 'ooo', 'other'];
+
+async function categorizeReply(text) {
+  try {
+    if (!process.env.GROQ_API_KEY && !process.env.OPENAI_API_KEY) return null;
+    const snippet = String(text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1200);
+    if (!snippet) return null;
+    const { ai, mf } = getClient();
+    const res = await ai.chat.completions.create({
+      model: mf,
+      max_tokens: 6,
+      temperature: 0,
+      messages: [
+        { role: 'system', content:
+`Classify a reply to a cold sales email into ONE category. Output ONLY the category key — no punctuation, no explanation.
+interested = wants to talk, asks for a call/pricing/more info, clear buying intent
+positive = friendly or curious but not committed yet
+not_now = interested later, busy, "circle back", "reach out next quarter"
+not_interested = no, not a fit, unsubscribe, stop, remove me
+ooo = out-of-office / automatic reply / on vacation
+other = referral to someone else, wrong person, unrelated question` },
+        { role: 'user', content: snippet },
+      ],
+    });
+    const out = (res.choices[0]?.message?.content || '').trim().toLowerCase().replace(/[^a-z_]/g, '');
+    return REPLY_CATEGORIES.includes(out) ? out : 'other';
+  } catch { return null; }
+}
+
+// Batch-classify recent uncategorized inbound replies (called by cron).
+async function categorizeInboxMessages(limit = 25) {
+  if (!process.env.GROQ_API_KEY && !process.env.OPENAI_API_KEY) return 0;
+  const { dbAll } = require('../models/db');
+  // Auto-replies → 'ooo' instantly (no AI needed)
+  await dbRun(`UPDATE messages SET ai_category='ooo' WHERE is_auto_reply=1 AND ai_category IS NULL`);
+  // Real inbound replies (not warmup, not our own sends) → AI classify
+  const rows = await dbAll(`
+    SELECT id, body FROM messages
+    WHERE (is_warmup=0 OR is_warmup IS NULL)
+      AND (is_auto_reply=0 OR is_auto_reply IS NULL)
+      AND status != 'sent'
+      AND ai_category IS NULL
+      AND (deleted=0 OR deleted IS NULL)
+    ORDER BY received_at DESC LIMIT ?`, [limit]);
+  let done = 0;
+  for (const m of rows) {
+    const cat = await categorizeReply(m.body);
+    await dbRun('UPDATE messages SET ai_category=? WHERE id=?', [cat || 'other', m.id]);
+    done++;
+  }
+  if (done) console.log(`🏷️  AI categorized ${done} reply(ies)`);
+  return done;
+}
+
 // ── Credits status (for frontend display) ───────────────────────────────────
 async function getCreditsStatus(userId) {
   const user  = await dbGet('SELECT plan FROM users WHERE id=?', [userId]);
@@ -389,6 +446,8 @@ module.exports = {
   analyzeSpam,
   generateSequence,
   suggestReplies,
+  categorizeReply,
+  categorizeInboxMessages,
   getCreditsStatus,
   PLAN_CREDITS,
   FEATURE_COSTS,
