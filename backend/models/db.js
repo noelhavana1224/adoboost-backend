@@ -346,10 +346,10 @@ function initSchema() {
 
     // ── Force-update all plans every startup so live servers stay in sync ──
     // (INSERT OR IGNORE above is skipped if the row already exists)
-    const TRIAL_F   = JSON.stringify(['5,000 contacts','Unlimited sends','2 warmup slots','100 lead finder credits/mo','25 AI credits/mo','Email warmup','Email verification']);
-    const START_F   = JSON.stringify(['15,000 contacts','Unlimited sends','10 warmup slots','1,000 lead finder credits/mo','3,500 verification credits/mo','250 AI credits/mo','Email warmup','Blacklist monitoring','IMAP inbox sync','Email templates','Calendar booking page']);
-    const PRO_F     = JSON.stringify(['50,000 contacts','Unlimited sends','30 warmup slots','5,000 lead finder credits/mo','10,000 verification credits/mo','1,000 AI credits/mo','Smart inbox rotation','Priority support','API access','LinkedIn outreach steps','Calendar booking page']);
-    const AGENCY_F  = JSON.stringify(['200,000 contacts','Unlimited sends','100 warmup slots','25,000 lead finder credits/mo','Unlimited verification','5,000 AI credits/mo','White-label','Sub-accounts','Dedicated support','API access','LinkedIn outreach steps','Calendar booking page']);
+    const TRIAL_F   = JSON.stringify(['5,000 contacts','Unlimited sends','2 warmup slots','25 AI credits/mo','Email warmup','Email verification']);
+    const START_F   = JSON.stringify(['15,000 contacts','Unlimited sends','10 warmup slots','3,500 verification credits/mo','250 AI credits/mo','Email warmup','Blacklist monitoring','IMAP inbox sync','Email templates','Calendar booking page']);
+    const PRO_F     = JSON.stringify(['50,000 contacts','Unlimited sends','30 warmup slots','10,000 verification credits/mo','1,000 AI credits/mo','Smart inbox rotation','Priority support','API access','LinkedIn outreach steps','Calendar booking page']);
+    const AGENCY_F  = JSON.stringify(['200,000 contacts','Unlimited sends','100 warmup slots','Unlimited verification','5,000 AI credits/mo','White-label','Sub-accounts','Dedicated support','API access','LinkedIn outreach steps','Calendar booking page']);
 
     db.run(`UPDATE plans SET name='Trial',       price_monthly=0,   max_contacts=5000,   max_campaigns=5,   max_emails_per_day=1000,   max_email_accounts=2,   max_ai_credits=25,   features=? WHERE id='plan_trial'`,     [TRIAL_F]);
     db.run(`UPDATE plans SET name='Starter',     price_monthly=29,  max_contacts=15000,  max_campaigns=50,  max_emails_per_day=10000,  max_email_accounts=10,  max_ai_credits=250,  features=? WHERE id='plan_starter'`,   [START_F]);
