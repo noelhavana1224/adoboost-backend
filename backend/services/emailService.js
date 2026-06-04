@@ -327,7 +327,7 @@ async function processPendingSends() {
   const pending = await dbAll(`
     SELECT s.*,
       c.email,c.first_name,c.last_name,c.company,c.title,c.website,c.custom_fields,
-      seq.subject,seq.body,
+      seq.subject,seq.subject_b,seq.body,
       camp.track_opens,camp.track_clicks,camp.status as campaign_status,camp.rotation_account_ids,
       ea.host,ea.port,ea.secure,ea.username,ea.password as smtp_pass,
       ea.from_name,ea.from_email,ea.signature,
@@ -405,7 +405,14 @@ async function processPendingSends() {
 
     try {
       const account   = { from_name: send.from_name, from_email: send.from_email, signature: send.signature };
-      const subject   = personalize(send.subject, send, account);
+      // ── A/B subject test: if a B variant exists, pick 50/50 and record which ──
+      let subjectVariant = null;
+      let subjectTemplate = send.subject;
+      if (send.subject_b && send.subject_b.trim()) {
+        subjectVariant  = Math.random() < 0.5 ? 'A' : 'B';
+        subjectTemplate = subjectVariant === 'B' ? send.subject_b : send.subject;
+      }
+      const subject   = personalize(subjectTemplate, send, account);
       const rawBody   = personalize(send.body,    send, account);
       // contactData passed to buildBody so custom unsubscribe footer can use {{email}}, {{first_name}}, etc.
       const contactData = { ...send, from_name: send.from_name, from_email: send.from_email };
@@ -427,8 +434,8 @@ async function processPendingSends() {
         text:    rawBody.replace(/<[^>]*>/g, ''),
       });
 
-      await dbRun(`UPDATE sends SET status='sent', sent_at=?, message_id=? WHERE id=?`,
-        [new Date().toISOString(), info.messageId, send.id]);
+      await dbRun(`UPDATE sends SET status='sent', sent_at=?, message_id=?, subject_variant=? WHERE id=?`,
+        [new Date().toISOString(), info.messageId, subjectVariant, send.id]);
       await dbRun(`UPDATE email_accounts SET sent_today=sent_today+1 WHERE id=?`,
         [send.email_account_id]);
 

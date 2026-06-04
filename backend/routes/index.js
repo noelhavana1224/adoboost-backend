@@ -835,8 +835,8 @@ campaignsRouter.post('/', async (req, res) => {
     if (sequences?.length) {
       for (let i=0; i<sequences.length; i++) {
         const s=sequences[i];
-        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note) VALUES (?,?,?,?,?,?,?,?,?)',
-          [uuidv4(), id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'']);
+        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note,subject_b) VALUES (?,?,?,?,?,?,?,?,?,?)',
+          [uuidv4(), id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'', s.subject_b||'']);
       }
     }
     res.json(await dbGet('SELECT * FROM campaigns WHERE id=?', [id]));
@@ -869,8 +869,8 @@ campaignsRouter.put('/:id', async (req, res) => {
       await dbRun('DELETE FROM sequences WHERE campaign_id=?', [req.params.id]);
       for (let i=0; i<sequences.length; i++) {
         const s=sequences[i];
-        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note) VALUES (?,?,?,?,?,?,?,?,?)',
-          [uuidv4(), req.params.id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'']);
+        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note,subject_b) VALUES (?,?,?,?,?,?,?,?,?,?)',
+          [uuidv4(), req.params.id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'', s.subject_b||'']);
       }
     }
     res.json({ success: true });
@@ -995,6 +995,45 @@ campaignsRouter.get('/:id/sends', async (req, res) => {
   try {
     const sends = await dbAll(`SELECT s.*,c.email,c.first_name,c.last_name,seq.subject,seq.step_number FROM sends s JOIN contacts c ON s.contact_id=c.id JOIN sequences seq ON s.sequence_id=seq.id WHERE s.campaign_id=? ORDER BY s.scheduled_at DESC LIMIT 200`, [req.params.id]);
     res.json(sends);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── A/B subject test results ────────────────────────────────────────────────
+campaignsRouter.get('/:id/ab-results', async (req, res) => {
+  try {
+    const c = await dbGet('SELECT id FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!c) return res.status(404).json({ error: 'Not found' });
+    // Steps that have an A/B test configured
+    const steps = await dbAll(`SELECT id, step_number, subject, subject_b FROM sequences WHERE campaign_id=? AND subject_b IS NOT NULL AND TRIM(subject_b)!='' ORDER BY step_number`, [req.params.id]);
+    const tests = [];
+    for (const st of steps) {
+      const variants = {};
+      for (const v of ['A', 'B']) {
+        const row = await dbGet(`
+          SELECT
+            COUNT(*) as sent,
+            SUM(CASE WHEN opened_at IS NOT NULL THEN 1 ELSE 0 END) as opened,
+            SUM(CASE WHEN replied=1 THEN 1 ELSE 0 END) as replied
+          FROM sends WHERE sequence_id=? AND status='sent' AND subject_variant=?`, [st.id, v]);
+        const sent = row?.sent || 0;
+        variants[v] = {
+          sent,
+          opened: row?.opened || 0,
+          replied: row?.replied || 0,
+          open_rate: sent > 0 ? +((row.opened / sent) * 100).toFixed(1) : 0,
+          reply_rate: sent > 0 ? +((row.replied / sent) * 100).toFixed(1) : 0,
+        };
+      }
+      // Winner by open rate (need a minimum sample on both)
+      let winner = null;
+      if (variants.A.sent >= 5 && variants.B.sent >= 5) {
+        if (variants.A.open_rate > variants.B.open_rate) winner = 'A';
+        else if (variants.B.open_rate > variants.A.open_rate) winner = 'B';
+        else winner = 'tie';
+      }
+      tests.push({ step_number: st.step_number, subject_a: st.subject, subject_b: st.subject_b, variants, winner });
+    }
+    res.json({ tests });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

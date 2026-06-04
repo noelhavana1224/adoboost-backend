@@ -450,6 +450,9 @@ function runMigrations() {
     `ALTER TABLE contacts ADD COLUMN email_checked_at DATETIME`,
     // ── AI reply categorization (auto lead-flagging) ──
     `ALTER TABLE messages ADD COLUMN ai_category TEXT`,
+    // ── A/B subject-line testing ──
+    `ALTER TABLE sequences ADD COLUMN subject_b TEXT`,
+    `ALTER TABLE sends ADD COLUMN subject_variant TEXT`,
   ];
 
   for (const sql of migrations) {
