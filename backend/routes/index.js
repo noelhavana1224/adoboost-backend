@@ -1025,6 +1025,55 @@ messagesRouter.get('/inbox', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Hot Leads board — replies the AI flagged as Interested / Positive ───────
+messagesRouter.get('/leads', async (req, res) => {
+  try {
+    const { category = 'all', search } = req.query;
+    let cats = ['interested', 'positive'];
+    if (category === 'interested') cats = ['interested'];
+    else if (category === 'positive') cats = ['positive'];
+    const placeholders = cats.map(() => '?').join(',');
+    let where = [
+      'm.user_id=?',
+      `m.ai_category IN (${placeholders})`,
+      'm.is_auto_reply=0',
+      '(m.is_warmup=0 OR m.is_warmup IS NULL)',
+      '(m.deleted=0 OR m.deleted IS NULL)',
+      `m.status != 'sent'`,
+    ];
+    const params = [req.effectiveUserId, ...cats];
+    if (search) { where.push('(m.from_email LIKE ? OR m.subject LIKE ? OR m.from_name LIKE ?)'); const s = `%${search}%`; params.push(s, s, s); }
+    const w = 'WHERE ' + where.join(' AND ');
+    const leads = await dbAll(`
+      SELECT m.id, m.from_email, m.from_name, m.subject, m.body, m.ai_category,
+             m.received_at, m.status, m.replied, m.tag, c.name as campaign_name
+      FROM messages m
+      LEFT JOIN campaigns c ON m.campaign_id = c.id
+      ${w}
+      ORDER BY CASE m.ai_category WHEN 'interested' THEN 0 ELSE 1 END, m.received_at DESC
+      LIMIT 300`, params);
+
+    // Counts for the header (whole account)
+    const countRow = await dbGet(`
+      SELECT
+        SUM(CASE WHEN ai_category='interested' THEN 1 ELSE 0 END) as interested,
+        SUM(CASE WHEN ai_category='positive' THEN 1 ELSE 0 END) as positive,
+        SUM(CASE WHEN ai_category IN ('interested','positive') AND status='unread' THEN 1 ELSE 0 END) as unread
+      FROM messages
+      WHERE user_id=? AND is_auto_reply=0 AND (is_warmup=0 OR is_warmup IS NULL)
+        AND (deleted=0 OR deleted IS NULL) AND status != 'sent'`, [req.effectiveUserId]);
+
+    res.json({
+      leads,
+      counts: {
+        interested: countRow?.interested || 0,
+        positive:   countRow?.positive || 0,
+        unread:     countRow?.unread || 0,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Warmer Inbox ────────────────────────────────────────────────────────────
 messagesRouter.get('/warmer-inbox', async (req, res) => {
   try {
