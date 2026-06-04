@@ -1429,6 +1429,61 @@ const analyticsRouter = express.Router();
 analyticsRouter.use(authMiddleware);
 analyticsRouter.use(effectiveUserMiddleware); // team members see owner's data
 
+// ── Deliverability & Hot-Leads command center (dashboard) ───────────────────
+analyticsRouter.get('/deliverability', async (req, res) => {
+  try {
+    const uid = req.effectiveUserId;
+
+    // AI-flagged leads + reply category breakdown
+    const cats = await dbGet(`
+      SELECT
+        SUM(CASE WHEN ai_category='interested' THEN 1 ELSE 0 END) as interested,
+        SUM(CASE WHEN ai_category='positive' THEN 1 ELSE 0 END) as positive,
+        SUM(CASE WHEN ai_category='not_now' THEN 1 ELSE 0 END) as not_now,
+        SUM(CASE WHEN ai_category='not_interested' THEN 1 ELSE 0 END) as not_interested,
+        SUM(CASE WHEN ai_category='interested' AND status='unread' THEN 1 ELSE 0 END) as interested_unread
+      FROM messages
+      WHERE user_id=? AND is_auto_reply=0 AND (is_warmup=0 OR is_warmup IS NULL)
+        AND (deleted=0 OR deleted IS NULL) AND status!='sent'`, [uid]);
+
+    // Warmup health across the user's inboxes
+    const warmup = await dbGet(`
+      SELECT COUNT(*) as accounts,
+             SUM(CASE WHEN warmup_enabled=1 THEN 1 ELSE 0 END) as active,
+             COALESCE(ROUND(AVG(CASE WHEN warmup_enabled=1 THEN warmup_health END)),0) as avg_health
+      FROM email_accounts WHERE user_id=?`, [uid]);
+
+    // Blacklist status for the user's sending domains
+    const accounts = await dbAll('SELECT from_email, username FROM email_accounts WHERE user_id=?', [uid]);
+    const domains = [...new Set(accounts.map(a => (a.from_email || a.username || '').split('@')[1]?.toLowerCase()).filter(Boolean))];
+    let clean = 0, listed = 0, scanned = 0;
+    for (const d of domains) {
+      const row = await dbGet('SELECT listed_count, total_lists FROM blacklist_status WHERE domain=?', [d]);
+      if (row && row.total_lists > 0) { scanned++; (row.listed_count > 0 ? listed++ : clean++); }
+    }
+
+    res.json({
+      leads: {
+        interested: cats?.interested || 0,
+        positive:   cats?.positive || 0,
+        interested_unread: cats?.interested_unread || 0,
+      },
+      replyCategories: {
+        interested:     cats?.interested || 0,
+        positive:       cats?.positive || 0,
+        not_now:        cats?.not_now || 0,
+        not_interested: cats?.not_interested || 0,
+      },
+      warmup: {
+        accounts:  warmup?.accounts || 0,
+        active:    warmup?.active || 0,
+        avgHealth: warmup?.avg_health || 0,
+      },
+      blacklist: { domains: domains.length, scanned, clean, listed },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 analyticsRouter.get('/summary', async (req, res) => {
   try {
     const uid = req.effectiveUserId;
