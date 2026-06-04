@@ -103,6 +103,35 @@ async function syncInbox(account) {
             if (fromEmail === account.username.toLowerCase()) continue;
             if (fromEmail === account.from_email?.toLowerCase()) continue;
 
+            // ── Async bounce detection ────────────────────────────────────────
+            // Bounce-back from a mail server (Mailer-Daemon / postmaster) or a
+            // Delivery Status Notification. Extract the failed recipient, mark
+            // the matching send + contact bounced, and don't store it as a reply.
+            const isBounceSender = /mailer-daemon|postmaster|mail delivery|no-?reply.*(mail|delivery)/i.test(`${fromEmail} ${fromName}`);
+            const isBounceSubject = /(delivery (status|failure|has failed)|undelivered|undeliverable|returned mail|failure notice|mail delivery failed|delivery status notification|message not delivered)/i.test(subject);
+            if (isBounceSender || isBounceSubject) {
+              // Find failed recipient email(s) in the bounce body
+              const emailRe = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+              const found = (body.match(emailRe) || []).map(e => e.toLowerCase())
+                .filter(e => e !== fromEmail && !e.includes('mailer-daemon') && !e.includes('postmaster') && e !== account.username.toLowerCase());
+              let marked = 0;
+              for (const rcpt of [...new Set(found)]) {
+                const bs = await dbAll(`
+                  SELECT s.id, s.contact_id FROM sends s
+                  JOIN campaigns c ON s.campaign_id=c.id
+                  JOIN contacts ct ON s.contact_id=ct.id
+                  WHERE LOWER(ct.email)=? AND c.user_id=? AND s.status IN ('sent','pending')`,
+                  [rcpt, account.user_id]);
+                for (const b of bs) {
+                  await dbRun(`UPDATE sends SET status='bounced', bounced=1, error_message='Bounced (mailer-daemon)' WHERE id=?`, [b.id]);
+                  await dbRun(`UPDATE contacts SET bounced=1, is_good=0 WHERE id=?`, [b.contact_id]);
+                  marked++;
+                }
+              }
+              if (marked) console.log(`📭 IMAP bounce: marked ${marked} send(s) bounced from a mailer-daemon notice`);
+              continue; // don't store the bounce notice as an inbox reply
+            }
+
             // Try to match to a campaign send — OPTIONAL, not required
             const send = await dbGet(`
               SELECT s.id, s.campaign_id

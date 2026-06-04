@@ -239,8 +239,13 @@ function buildBody(html, sendId, trackClicks, trackOpens, canSpamFooter, customU
   const unsubUrl = `${BASE_URL()}/api/tracking/unsubscribe/${sendId}`;
 
   if (trackClicks) {
-    body = body.replace(/href="(https?:\/\/[^"]+)"/g, (_, url) =>
-      `href="${BASE_URL()}/api/tracking/click/${sendId}?url=${encodeURIComponent(url)}"`);
+    // Rewrite links to the click-tracking redirect. Handles both double and
+    // single quotes and is case-insensitive (HREF=, href=, etc.). Skips the
+    // unsubscribe link (added separately) and mailto/tel links.
+    body = body.replace(/href=(["'])(https?:\/\/[^"']+)\1/gi, (m, q, url) => {
+      if (url.includes('/api/tracking/')) return m; // already a tracking link
+      return `href="${BASE_URL()}/api/tracking/click/${sendId}?url=${encodeURIComponent(url)}"`;
+    });
   }
 
   if (canSpamFooter) {
@@ -453,9 +458,23 @@ async function processPendingSends() {
       await sleep(2000 + Math.floor(Math.random() * 3000));
 
     } catch (err) {
-      console.error(`❌ Send failed → ${send.email}:`, err.message);
-      await dbRun(`UPDATE sends SET status='failed', error_message=? WHERE id=?`,
-        [err.message, send.id]);
+      // ── Bounce detection: a permanent SMTP rejection (5xx) or a clear
+      // "bad mailbox" message = hard bounce. Mark the send + contact bounced so
+      // bounce rate is accurate and future campaigns skip the address. Anything
+      // else is a soft/transient failure (retryable) → status='failed'.
+      const code = err.responseCode || err.code || 0;
+      const msg  = `${err.response || ''} ${err.message || ''}`.toLowerCase();
+      const isHardBounce =
+        (typeof code === 'number' && code >= 500 && code < 600) ||
+        /\b5\d\d\b|no such user|user unknown|mailbox unavailable|mailbox not found|does not exist|recipient (address )?rejected|address rejected|no mailbox|invalid recipient|recipient not found|unknown recipient|account.*(disabled|suspended)|no such address|user not found|undeliverable/.test(msg);
+      if (isHardBounce) {
+        console.error(`📭 Bounce → ${send.email}: ${err.message}`);
+        await dbRun(`UPDATE sends SET status='bounced', bounced=1, error_message=? WHERE id=?`, [err.message, send.id]);
+        await dbRun(`UPDATE contacts SET bounced=1, is_good=0 WHERE id=?`, [send.contact_id]);
+      } else {
+        console.error(`❌ Send failed → ${send.email}:`, err.message);
+        await dbRun(`UPDATE sends SET status='failed', error_message=? WHERE id=?`, [err.message, send.id]);
+      }
     }
   }
 }
