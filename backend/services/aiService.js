@@ -17,10 +17,10 @@ const { v4: uuidv4 }   = require('uuid');
 
 // ── Plan monthly credit allowances ──────────────────────────────────────────
 const PLAN_CREDITS = {
-  trial:        10,
-  starter:      100,
+  trial:        25,
+  starter:      250,
   professional: 1000,
-  unlimited:    9999,
+  unlimited:    5000,   // Agency — capped (not unlimited) to protect AI margin
 };
 
 // ── Credits consumed per feature ────────────────────────────────────────────

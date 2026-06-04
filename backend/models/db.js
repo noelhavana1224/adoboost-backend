@@ -346,15 +346,15 @@ function initSchema() {
 
     // ── Force-update all plans every startup so live servers stay in sync ──
     // (INSERT OR IGNORE above is skipped if the row already exists)
-    const TRIAL_F   = JSON.stringify(['2 campaigns','200 contacts','50 emails/day','1 email account','10 AI credits/month','AI-powered warmup','Email verification']);
-    const START_F   = JSON.stringify(['10 campaigns','3,000 contacts','500 emails/day','3 email accounts','100 AI credits/month','AI-powered warmup','Email verification','Blacklist monitoring','IMAP inbox sync','Email templates','Calendar booking page']);
-    const PRO_F     = JSON.stringify(['50 campaigns','15,000 contacts','2,000 emails/day','25 email accounts','1,000 AI credits/month','AI-powered warmup','Email verification','Blacklist monitoring','Smart inbox rotation','Priority support','API access','LinkedIn outreach steps','Calendar booking page']);
-    const AGENCY_F  = JSON.stringify(['Unlimited campaigns','250,000 contacts','Unlimited emails/day','Unlimited email accounts','Unlimited AI credits/month','AI-powered warmup','Email verification','Blacklist monitoring','Smart inbox rotation','White-label','Dedicated support','API access','Sub-accounts','LinkedIn outreach steps','Calendar booking page']);
+    const TRIAL_F   = JSON.stringify(['2 campaigns','200 contacts','50 emails/day','1 email account','25 AI credits/month','AI-powered warmup','Email verification']);
+    const START_F   = JSON.stringify(['10 campaigns','3,000 contacts','500 emails/day','3 email accounts','250 AI credits/month','AI-powered warmup','Email verification','Blacklist monitoring','IMAP inbox sync','Email templates','Calendar booking page']);
+    const PRO_F     = JSON.stringify(['50 campaigns','15,000 contacts','2,000 emails/day','25 email accounts','1,000 AI credits/month','AI-powered warmup','Email verification','Advanced email verification','Blacklist monitoring','Smart inbox rotation','Priority support','API access','LinkedIn outreach steps','Calendar booking page']);
+    const AGENCY_F  = JSON.stringify(['Unlimited campaigns','250,000 contacts','10,000 emails/day','Unlimited email accounts','5,000 AI credits/month','AI-powered warmup','Email verification','Advanced email verification','Blacklist monitoring','Smart inbox rotation','White-label','Dedicated support','API access','Sub-accounts','LinkedIn outreach steps','Calendar booking page']);
 
-    db.run(`UPDATE plans SET name='Trial',       price_monthly=0,   max_contacts=200,    max_campaigns=2,   max_emails_per_day=50,     max_email_accounts=1,   features=? WHERE id='plan_trial'`,     [TRIAL_F]);
-    db.run(`UPDATE plans SET name='Starter',     price_monthly=29,  max_contacts=3000,   max_campaigns=10,  max_emails_per_day=500,    max_email_accounts=3,   features=? WHERE id='plan_starter'`,   [START_F]);
-    db.run(`UPDATE plans SET name='Professional',price_monthly=79,  max_contacts=15000,  max_campaigns=50,  max_emails_per_day=2000,   max_email_accounts=25,  features=? WHERE id='plan_pro'`,       [PRO_F]);
-    db.run(`UPDATE plans SET name='Agency',      price_monthly=299, max_contacts=250000, max_campaigns=999, max_emails_per_day=999999, max_email_accounts=999, features=? WHERE id='plan_unlimited'`, [AGENCY_F]);
+    db.run(`UPDATE plans SET name='Trial',       price_monthly=0,   max_contacts=200,    max_campaigns=2,   max_emails_per_day=50,    max_email_accounts=1,   max_ai_credits=25,   features=? WHERE id='plan_trial'`,     [TRIAL_F]);
+    db.run(`UPDATE plans SET name='Starter',     price_monthly=29,  max_contacts=3000,   max_campaigns=10,  max_emails_per_day=500,   max_email_accounts=3,   max_ai_credits=250,  features=? WHERE id='plan_starter'`,   [START_F]);
+    db.run(`UPDATE plans SET name='Professional',price_monthly=79,  max_contacts=15000,  max_campaigns=50,  max_emails_per_day=2000,  max_email_accounts=25,  max_ai_credits=1000, features=? WHERE id='plan_pro'`,       [PRO_F]);
+    db.run(`UPDATE plans SET name='Agency',      price_monthly=299, max_contacts=250000, max_campaigns=999, max_emails_per_day=10000, max_email_accounts=999, max_ai_credits=5000, features=? WHERE id='plan_unlimited'`, [AGENCY_F]);
   });
 }
 
