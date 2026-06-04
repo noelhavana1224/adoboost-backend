@@ -163,6 +163,18 @@ function initSchema() {
       status TEXT DEFAULT 'pending', scheduled_at DATETIME,
       sent_at DATETIME, error_message TEXT)`);
 
+    // Infrastructure orders (done-for-you mailboxes + domains)
+    db.run(`CREATE TABLE IF NOT EXISTS infra_orders (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      provider TEXT, target_volume INTEGER,
+      mailboxes INTEGER, domains INTEGER, warmup_per_day INTEGER,
+      mailbox_price REAL, domain_price REAL,
+      first_month_cost REAL, monthly_cost REAL, annual_cost REAL,
+      own_domain INTEGER DEFAULT 0, notes TEXT,
+      status TEXT DEFAULT 'pending', admin_notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME, delivered_at DATETIME)`);
+
     // Lead-list requests (done-for-you list building)
     db.run(`CREATE TABLE IF NOT EXISTS list_requests (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL,

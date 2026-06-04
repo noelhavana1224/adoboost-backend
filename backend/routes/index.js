@@ -1517,6 +1517,53 @@ listRequestsRouter.post('/:id/cancel', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Infrastructure Orders (done-for-you mailboxes + domains) ────────────────
+const infraOrdersRouter = express.Router();
+infraOrdersRouter.use(authMiddleware);
+infraOrdersRouter.use(effectiveUserMiddleware);
+
+infraOrdersRouter.get('/', async (req, res) => {
+  try {
+    const rows = await dbAll('SELECT * FROM infra_orders WHERE user_id=? ORDER BY created_at DESC', [req.effectiveUserId]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+infraOrdersRouter.post('/', async (req, res) => {
+  try {
+    const b = req.body;
+    const id = uuidv4();
+    await dbRun(
+      `INSERT INTO infra_orders (id,user_id,provider,target_volume,mailboxes,domains,warmup_per_day,
+        mailbox_price,domain_price,first_month_cost,monthly_cost,annual_cost,own_domain,notes,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending')`,
+      [id, req.effectiveUserId, b.provider||'google', parseInt(b.target_volume)||0,
+       parseInt(b.mailboxes)||0, parseInt(b.domains)||0, parseInt(b.warmup_per_day)||0,
+       Number(b.mailbox_price)||0, Number(b.domain_price)||0,
+       Number(b.first_month_cost)||0, Number(b.monthly_cost)||0, Number(b.annual_cost)||0,
+       b.own_domain?1:0, b.notes||'']
+    );
+    try {
+      const u = await dbGet('SELECT name,email FROM users WHERE id=?', [req.effectiveUserId]);
+      const { sendSystemEmail } = require('../services/emailSystem');
+      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'noel@adobosolutions.com';
+      sendSystemEmail(adminEmail, `🧰 New infrastructure order from ${u?.name||u?.email}`,
+        `<h3>New Done-For-You Infrastructure Order</h3>
+         <p><b>From:</b> ${u?.name||''} &lt;${u?.email||''}&gt;</p>
+         <ul>
+           <li><b>Provider:</b> ${b.provider}</li>
+           <li><b>Mailboxes:</b> ${b.mailboxes}</li>
+           <li><b>Domains:</b> ${b.domains} ${b.own_domain?'(client owns domain)':''}</li>
+           <li><b>Target volume:</b> ${b.target_volume}/day</li>
+           <li><b>First month:</b> $${b.first_month_cost} · <b>Monthly:</b> $${b.monthly_cost}</li>
+           <li><b>Notes:</b> ${b.notes||'—'}</li>
+         </ul>
+         <p>Manage it in Admin → Infra Orders.</p>`).catch(()=>{});
+    } catch {}
+    res.json({ success: true, id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Analytics ───────────────────────────────────
 const analyticsRouter = express.Router();
 analyticsRouter.use(authMiddleware);
@@ -1888,6 +1935,29 @@ adminRouter.put('/list-requests/:id', async (req, res) => {
       `UPDATE list_requests SET status=?, admin_notes=?, delivered_count=?, delivered_at=?, updated_at=? WHERE id=?`,
       [status ?? cur.status, admin_notes ?? cur.admin_notes, delivered_count ?? cur.delivered_count, deliveredAt, new Date().toISOString(), req.params.id]
     );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Infrastructure orders (admin) ───────────────────────────────────────────
+adminRouter.get('/infra-orders', async (req, res) => {
+  try {
+    const rows = await dbAll(`
+      SELECT io.*, u.name as user_name, u.email as user_email
+      FROM infra_orders io LEFT JOIN users u ON io.user_id=u.id
+      ORDER BY CASE io.status WHEN 'pending' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, io.created_at DESC`);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+adminRouter.put('/infra-orders/:id', async (req, res) => {
+  try {
+    const { status, admin_notes } = req.body;
+    const cur = await dbGet('SELECT * FROM infra_orders WHERE id=?', [req.params.id]);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    const deliveredAt = status === 'delivered' ? new Date().toISOString() : cur.delivered_at;
+    await dbRun(`UPDATE infra_orders SET status=?, admin_notes=?, delivered_at=?, updated_at=? WHERE id=?`,
+      [status ?? cur.status, admin_notes ?? cur.admin_notes, deliveredAt, new Date().toISOString(), req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2533,4 +2603,4 @@ internalRouter.post('/trigger-warmup', requireCronSecret, async (req, res) => {
     console.error('❌ Warmup failed:', e.message);
   }
 });
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter, usageRouter };
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, infraOrdersRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter, usageRouter };

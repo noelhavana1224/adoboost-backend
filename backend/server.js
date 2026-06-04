@@ -22,14 +22,14 @@ const cron = require('node-cron');
 
 // ── Load routers with isolation — one bad module won't take down the rest ─
 let emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
-    exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, analyticsRouter,
+    exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, infraOrdersRouter, analyticsRouter,
     trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
     vaUpsellRouter, supportRouter, internalRouter, usageRouter;
 
 try {
   ({
     emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
-    exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, analyticsRouter,
+    exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, infraOrdersRouter, analyticsRouter,
     trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
     vaUpsellRouter, supportRouter, internalRouter, usageRouter,
   } = require('./routes/index'));
@@ -138,6 +138,7 @@ mount('/api/exclusions',     exclusionsRouter,      'exclusionsRouter');
 mount('/api/templates',      templatesRouter,       'templatesRouter');
 mount('/api/tickets',        ticketsRouter,         'ticketsRouter');
 mount('/api/list-requests',  listRequestsRouter,    'listRequestsRouter');
+mount('/api/infra-orders',   infraOrdersRouter,     'infraOrdersRouter');
 mount('/api/analytics',      analyticsRouter,       'analyticsRouter');
 mount('/api/tracking',       trackingRouter,        'trackingRouter');
 mount('/api/admin',          adminRouter,           'adminRouter');
