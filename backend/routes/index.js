@@ -562,8 +562,20 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
     const mapping = req.body.mapping ? JSON.parse(req.body.mapping) : {};
     const fallbacks = req.body.fallbacks ? JSON.parse(req.body.fallbacks) : {};
     const records = parse(req.file.buffer.toString('utf-8'), { columns: true, skip_empty_lines: true, trim: true });
-    let imported = 0, updated = 0, skipped = 0;
+    let imported = 0, updated = 0, skipped = 0, limitBlocked = 0;
     const errors = [];
+
+    // ── Storage cap: never let an import exceed the plan's contact limit ──
+    // (Protects against million-row uploads that would balloon storage cost.)
+    const user = await dbGet('SELECT plan FROM users WHERE id=?', [req.effectiveUserId]);
+    const planSlug = (user?.plan || 'trial').toLowerCase();
+    const PLAN_ID_MAP2 = { trial: 'plan_trial', starter: 'plan_starter', professional: 'plan_pro', unlimited: 'plan_unlimited' };
+    const planRow = await dbGet('SELECT max_contacts, name FROM plans WHERE id=?', [PLAN_ID_MAP2[planSlug] || 'plan_trial']);
+    const maxContacts = planRow?.max_contacts;
+    const curCount = (await dbGet('SELECT COUNT(*) as n FROM contacts WHERE user_id=?', [req.effectiveUserId]))?.n || 0;
+    // Only NEW contacts count toward the cap (updates to existing are free).
+    let remainingBudget = (maxContacts == null || maxContacts >= 999999) ? Infinity : Math.max(0, maxContacts - curCount);
+
     for (const row of records) {
       try {
         let email = '';
@@ -614,6 +626,8 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
             updated++;
           } else { skipped++; }
         } else {
+          // Enforce storage cap on NEW contacts
+          if (remainingBudget <= 0) { limitBlocked++; continue; }
           const id = uuidv4();
           // Apply import-level tags if provided
           const importTagsRaw = req.body.import_tags;
@@ -622,10 +636,16 @@ contactsRouter.post('/import', upload.single('file'), async (req, res) => {
           await dbRun('INSERT INTO contacts (id,user_id,list_id,email,first_name,last_name,company,title,phone,website,custom_fields,tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
             [id, req.effectiveUserId, list_id||null, email, first_name, last_name, company, title, phone, website, JSON.stringify(custom), tagsJson]);
           imported++;
+          remainingBudget--;
         }
       } catch (e) { skipped++; errors.push(e.message); }
     }
-    res.json({ imported, updated, skipped, total: records.length, errors: errors.slice(0, 5) });
+    const resp = { imported, updated, skipped, total: records.length, errors: errors.slice(0, 5) };
+    if (limitBlocked > 0) {
+      resp.limit_blocked = limitBlocked;
+      resp.limit_message = `${limitBlocked.toLocaleString()} contact(s) were not imported — you reached your ${planRow?.name || planSlug} plan limit of ${(maxContacts||0).toLocaleString()} contacts. Upgrade to store more.`;
+    }
+    res.json(resp);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
