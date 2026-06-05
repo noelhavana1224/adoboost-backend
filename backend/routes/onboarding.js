@@ -17,6 +17,7 @@ router.get('/status', async (req, res) => {
     const count = async (sql) => (await dbGet(sql, [id]))?.n || 0;
 
     const accounts  = await count('SELECT COUNT(*) n FROM email_accounts WHERE user_id=?');
+    const warming   = await count('SELECT COUNT(*) n FROM email_accounts WHERE user_id=? AND warmup_enabled=1');
     const contacts  = await count('SELECT COUNT(*) n FROM contacts WHERE user_id=?');
     const campaigns = await count('SELECT COUNT(*) n FROM campaigns WHERE user_id=?');
     const launched  = await count("SELECT COUNT(*) n FROM campaigns WHERE user_id=? AND status IN ('active','sending','scheduled','completed','paused')");
@@ -25,10 +26,11 @@ router.get('/status', async (req, res) => {
     const dismissed = (dismissedRow?.onboarding_dismissed === 1);
 
     const steps = [
-      { key: 'inbox',    label: 'Connect your sending inbox', done: accounts > 0,  cta: 'Connect inbox',    link: '/email-accounts' },
-      { key: 'contacts', label: 'Import your contacts',       done: contacts > 0,  cta: 'Add contacts',     link: '/contacts' },
-      { key: 'campaign', label: 'Create your first campaign', done: campaigns > 0, cta: 'Create campaign',  link: '/campaigns/new' },
-      { key: 'launch',   label: 'Launch it & start sending',  done: launched > 0,  cta: 'Launch campaign',  link: '/campaigns' },
+      { key: 'inbox',    label: 'Connect your sending inbox',      done: accounts > 0,  cta: 'Connect inbox',    link: '/email-accounts' },
+      { key: 'warmup',   label: 'Turn on warmup to build reputation', done: warming > 0, cta: 'Enable warmup',  link: '/settings/warmup' },
+      { key: 'contacts', label: 'Import your contacts',            done: contacts > 0,  cta: 'Add contacts',     link: '/contacts' },
+      { key: 'campaign', label: 'Create your first campaign',      done: campaigns > 0, cta: 'Create campaign',  link: '/campaigns/new' },
+      { key: 'launch',   label: 'Launch it & start sending',       done: launched > 0,  cta: 'Launch campaign',  link: '/campaigns' },
     ];
     const doneCount = steps.filter(s => s.done).length;
 
