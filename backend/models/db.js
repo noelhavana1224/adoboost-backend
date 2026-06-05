@@ -186,6 +186,17 @@ function initSchema() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME, delivered_at DATETIME)`);
 
+    // In-app notifications — one row per notification per user
+    db.run(`CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL, body TEXT,
+      link TEXT, icon TEXT,
+      is_read INTEGER DEFAULT 0,
+      meta TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read, created_at)`);
+
     // Blacklist / DNSBL monitoring — one cached row per sending domain
     db.run(`CREATE TABLE IF NOT EXISTS blacklist_status (
       domain TEXT PRIMARY KEY,
@@ -476,6 +487,10 @@ function runMigrations() {
     // ── A/B subject-line testing ──
     `ALTER TABLE sequences ADD COLUMN subject_b TEXT`,
     `ALTER TABLE sends ADD COLUMN subject_variant TEXT`,
+    // ── Notification preferences (JSON map of type→bool). NULL = all enabled by default. ──
+    `ALTER TABLE users ADD COLUMN notification_prefs TEXT`,
+    // tracks whether we've already notified about a low-credit threshold this cycle
+    `ALTER TABLE users ADD COLUMN last_low_credit_notice TEXT`,
   ];
 
   for (const sql of migrations) {

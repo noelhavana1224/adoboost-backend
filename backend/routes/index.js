@@ -1977,6 +1977,19 @@ adminRouter.put('/list-requests/:id', async (req, res) => {
       `UPDATE list_requests SET status=?, admin_notes=?, delivered_count=?, delivered_at=?, updated_at=? WHERE id=?`,
       [status ?? cur.status, admin_notes ?? cur.admin_notes, delivered_count ?? cur.delivered_count, deliveredAt, new Date().toISOString(), req.params.id]
     );
+    // Notify the customer if the status actually changed
+    if (status && status !== cur.status) {
+      const { createNotification } = require('../services/notify');
+      const labels = { in_progress: 'is being built right now', delivered: 'has been delivered to your Contacts', cancelled: 'was cancelled', pending: 'is queued' };
+      createNotification(cur.user_id, 'list_request', {
+        title: status === 'delivered' ? '✅ Your lead list is ready!' : '📋 Lead-list request update',
+        body: status === 'delivered'
+          ? `${(delivered_count ?? cur.delivered_count) || ''} verified leads have been added to your Contacts.`.trim()
+          : `Your lead-list request ${labels[status] || ('is now ' + status)}.`,
+        link: status === 'delivered' ? '/contacts' : '/lead-list',
+        icon: 'list',
+      });
+    }
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2000,7 +2013,35 @@ adminRouter.put('/infra-orders/:id', async (req, res) => {
     const deliveredAt = status === 'delivered' ? new Date().toISOString() : cur.delivered_at;
     await dbRun(`UPDATE infra_orders SET status=?, admin_notes=?, delivered_at=?, updated_at=? WHERE id=?`,
       [status ?? cur.status, admin_notes ?? cur.admin_notes, deliveredAt, new Date().toISOString(), req.params.id]);
+    if (status && status !== cur.status) {
+      const { createNotification } = require('../services/notify');
+      const labels = { in_progress: 'is being set up', delivered: 'is ready — your mailboxes are live', cancelled: 'was cancelled', pending: 'is queued' };
+      createNotification(cur.user_id, 'infra_order', {
+        title: status === 'delivered' ? '🧰 Your inbox infrastructure is ready!' : '🧰 Infrastructure order update',
+        body: `Your ${cur.mailboxes || ''}-mailbox order ${labels[status] || ('is now ' + status)}.`,
+        link: '/email-accounts',
+        icon: 'server',
+      });
+    }
     res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Broadcast announcement to all users (admin) ─────────────────────────────
+adminRouter.post('/broadcast', async (req, res) => {
+  try {
+    const { title, body, link } = req.body;
+    if (!title) return res.status(400).json({ error: 'Title required' });
+    const users = await dbAll(`SELECT id FROM users WHERE COALESCE(is_suspended,0)=0`);
+    const { createNotification } = require('../services/notify');
+    let sent = 0;
+    for (const u of users) {
+      const id = await createNotification(u.id, 'feature', {
+        title, body: body || '', link: link || '', icon: 'megaphone',
+      });
+      if (id) sent++;
+    }
+    res.json({ success: true, sent, total: users.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2622,6 +2663,73 @@ usageRouter.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Notifications ────────────────────────────────
+const { NOTIF_TYPES, defaultPrefs, parsePrefs } = require('../services/notify');
+const notificationsRouter = express.Router();
+notificationsRouter.use(authMiddleware);
+
+// List recent notifications (own — uses real userId, not effective owner)
+notificationsRouter.get('/', async (req, res) => {
+  try {
+    const rows = await dbAll(
+      'SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50',
+      [req.userId]
+    );
+    const unread = (await dbGet('SELECT COUNT(*) as n FROM notifications WHERE user_id=? AND is_read=0', [req.userId]))?.n || 0;
+    res.json({ notifications: rows.map(r => ({ ...r, meta: r.meta ? JSON.parse(r.meta) : null })), unread });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+notificationsRouter.get('/unread-count', async (req, res) => {
+  try {
+    const n = (await dbGet('SELECT COUNT(*) as n FROM notifications WHERE user_id=? AND is_read=0', [req.userId]))?.n || 0;
+    res.json({ unread: n });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+notificationsRouter.post('/:id/read', async (req, res) => {
+  try {
+    await dbRun('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+notificationsRouter.post('/read-all', async (req, res) => {
+  try {
+    await dbRun('UPDATE notifications SET is_read=1 WHERE user_id=? AND is_read=0', [req.userId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+notificationsRouter.delete('/:id', async (req, res) => {
+  try {
+    await dbRun('DELETE FROM notifications WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Notification preferences (which types the user wants)
+notificationsRouter.get('/prefs', async (req, res) => {
+  try {
+    const u = await dbGet('SELECT notification_prefs FROM users WHERE id=?', [req.userId]);
+    const types = Object.entries(NOTIF_TYPES).map(([key, v]) => ({ key, label: v.label }));
+    res.json({ prefs: parsePrefs(u?.notification_prefs), types });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+notificationsRouter.put('/prefs', async (req, res) => {
+  try {
+    const incoming = req.body?.prefs || {};
+    // Only persist known keys, coerced to bool
+    const clean = {};
+    for (const k of Object.keys(NOTIF_TYPES)) {
+      clean[k] = incoming[k] === undefined ? NOTIF_TYPES[k].default : !!incoming[k];
+    }
+    await dbRun('UPDATE users SET notification_prefs=? WHERE id=?', [JSON.stringify(clean), req.userId]);
+    res.json({ success: true, prefs: clean });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Internal Triggers (called by Hostinger cron) ──
 const internalRouter = express.Router();
 
@@ -2645,4 +2753,4 @@ internalRouter.post('/trigger-warmup', requireCronSecret, async (req, res) => {
     console.error('❌ Warmup failed:', e.message);
   }
 });
-module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, infraOrdersRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter, usageRouter };
+module.exports = { emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter, exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, infraOrdersRouter, analyticsRouter, trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter, vaUpsellRouter, supportRouter, internalRouter, usageRouter, notificationsRouter };

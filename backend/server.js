@@ -24,14 +24,14 @@ const cron = require('node-cron');
 let emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
     exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, infraOrdersRouter, analyticsRouter,
     trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
-    vaUpsellRouter, supportRouter, internalRouter, usageRouter;
+    vaUpsellRouter, supportRouter, internalRouter, usageRouter, notificationsRouter;
 
 try {
   ({
     emailAccountsRouter, contactsRouter, campaignsRouter, messagesRouter,
     exclusionsRouter, templatesRouter, ticketsRouter, listRequestsRouter, infraOrdersRouter, analyticsRouter,
     trackingRouter, adminRouter, warmupRouter, teamRouter, adminTeamRouter,
-    vaUpsellRouter, supportRouter, internalRouter, usageRouter,
+    vaUpsellRouter, supportRouter, internalRouter, usageRouter, notificationsRouter,
   } = require('./routes/index'));
 } catch (e) {
   console.error('[startup] Failed to load routes/index.js:', e.message);
@@ -148,6 +148,7 @@ mount('/api/admin/team',     adminTeamRouter,       'adminTeamRouter');
 mount('/api/admin/support',  supportRouter,         'supportRouter');
 mount('/api',                vaUpsellRouter,        'vaUpsellRouter');
 mount('/api/usage',          usageRouter,           'usageRouter');
+mount('/api/notifications',  notificationsRouter,   'notificationsRouter');
 mount('/api/internal',       internalRouter,        'internalRouter');
 
 // ── Booking Calendar ──────────────────────────────────────────────────────

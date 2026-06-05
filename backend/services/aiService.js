@@ -116,6 +116,34 @@ async function logUsage(userId, feature, cost, model, inputTokens, outputTokens)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [uuidv4(), userId, feature, cost, model, inputTokens || 0, outputTokens || 0, new Date().toISOString()]
   );
+  // Low-credit notification (once per threshold per month)
+  try {
+    const user  = await dbGet('SELECT plan, last_low_credit_notice FROM users WHERE id=?', [userId]);
+    const slug  = (user?.plan || 'trial').toLowerCase();
+    const limit = await getPlanCreditLimit(slug);
+    if (limit && limit < 99999) {
+      const used = await getMonthlyUsed(userId);
+      const remaining = Math.max(0, limit - used);
+      const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+      let threshold = null;
+      if (remaining <= 0) threshold = 'depleted';
+      else if (remaining / limit <= 0.1) threshold = '10';
+      else if (remaining / limit <= 0.25) threshold = '25';
+      const marker = threshold ? `${month}:${threshold}` : null;
+      if (marker && user?.last_low_credit_notice !== marker) {
+        await dbRun('UPDATE users SET last_low_credit_notice=? WHERE id=?', [marker, userId]);
+        const { createNotification } = require('./notify');
+        createNotification(userId, 'low_credit', {
+          title: threshold === 'depleted' ? '🪫 AI credits used up' : '⚡ Running low on AI credits',
+          body: threshold === 'depleted'
+            ? `You've used all ${limit} AI credits this month. Upgrade for more.`
+            : `Only ${remaining} of ${limit} AI credits left this month.`,
+          link: '/settings/user',
+          icon: 'zap',
+        });
+      }
+    }
+  } catch (e) { /* never block AI on notify failure */ }
 }
 
 // ── 1. Rewrite email ─────────────────────────────────────────────────────────

@@ -258,6 +258,15 @@ async function sendWarmupEmail(fromAccount, toAccount) {
               fromAccount.from_email, fromAccount.name
             ).catch(ex => console.error('[warmup] disconnect alert error:', ex.message));
           }
+          try {
+            const { createNotification } = require('./notify');
+            createNotification(fromAccount.user_id, 'inbox_health', {
+              title: '⚠️ Inbox disconnected',
+              body: `${fromAccount.from_email} failed to authenticate and was paused. Reconnect it to keep warmup and sending running.`,
+              link: '/email-accounts',
+              icon: 'mail-warning',
+            });
+          } catch {}
         }
       } catch (notifyErr) {
         console.error('[warmup] Failed to send disconnect alert:', notifyErr.message);

@@ -180,6 +180,19 @@ async function syncInbox(account) {
               await dbRun('UPDATE sends SET replied=1 WHERE id=?', [send.id]);
             }
 
+            // Notify on genuine human replies (skip warmup traffic & auto-replies)
+            if (!isWarmup && !autoReply) {
+              try {
+                const { createNotification } = require('./notify');
+                createNotification(account.user_id, 'reply', {
+                  title: '💬 New reply',
+                  body: `${fromName || fromEmail}: ${(subject || '(no subject)').slice(0, 80)}`,
+                  link: '/messages',
+                  icon: 'reply',
+                });
+              } catch {}
+            }
+
             synced++;
           } catch (e) {
             console.error('Error parsing email:', e.message);
