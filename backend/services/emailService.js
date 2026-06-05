@@ -201,8 +201,28 @@ function humanScheduleSends(contacts, sequences, account, launchTime = new Date(
 }
 
 // ── Personalize template ─────────────────────────
+// ── Spintax ──────────────────────────────────────
+// Resolves {option a|option b|option c} into one randomly-chosen variant so
+// every email is slightly different (better deliverability, avoids spam-pattern
+// detection). Supports nesting. Merge tags use {{double braces}} and contain no
+// pipe, so they are never matched here.
+function spintax(text) {
+  if (!text || text.indexOf('|') === -1) return text;
+  const re = /\{([^{}]*\|[^{}]*)\}/; // innermost group containing a pipe
+  let out = text;
+  let guard = 0;
+  while (re.test(out) && guard++ < 1000) {
+    out = out.replace(re, (_, group) => {
+      const opts = group.split('|');
+      return opts[Math.floor(Math.random() * opts.length)];
+    });
+  }
+  return out;
+}
+
 function personalize(template, contact, account) {
   try {
+    template = spintax(template);
     const custom = JSON.parse(contact.custom_fields || '{}');
     const fallbacks = custom._fallbacks || {};
     let signature = '';
@@ -349,6 +369,11 @@ async function processPendingSends() {
     WHERE s.status='pending' AND s.scheduled_at<=?
     AND camp.status='active'
     AND c.unsubscribed=0 AND c.bounced=0
+    -- Auto-pause: never send if this contact already replied in this campaign
+    AND NOT EXISTS (
+      SELECT 1 FROM sends sr
+      WHERE sr.contact_id=s.contact_id AND sr.campaign_id=s.campaign_id AND sr.replied=1
+    )
     ORDER BY s.scheduled_at ASC LIMIT 30`, [now]);
 
   if (pending.length === 0) return;

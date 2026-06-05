@@ -134,7 +134,7 @@ async function syncInbox(account) {
 
             // Try to match to a campaign send — OPTIONAL, not required
             const send = await dbGet(`
-              SELECT s.id, s.campaign_id
+              SELECT s.id, s.campaign_id, s.contact_id
               FROM sends s
               JOIN campaigns c ON s.campaign_id = c.id
               JOIN contacts ct ON s.contact_id = ct.id
@@ -178,6 +178,17 @@ async function syncInbox(account) {
             // If matched to a campaign send, mark contact as replied
             if (send) {
               await dbRun('UPDATE sends SET replied=1 WHERE id=?', [send.id]);
+              // ── Auto-pause-on-reply ──────────────────────────────────────────
+              // A real human replied — cancel the rest of the sequence for this
+              // contact so we never email someone who already answered.
+              if (!isWarmup && !autoReply && send.contact_id) {
+                const r = await dbRun(
+                  `UPDATE sends SET status='cancelled_replied'
+                   WHERE contact_id=? AND campaign_id=? AND status='pending'`,
+                  [send.contact_id, send.campaign_id]
+                );
+                if (r?.changes) console.log(`⏸ Auto-paused ${r.changes} pending step(s) for replier ${fromEmail}`);
+              }
             }
 
             // Notify on genuine human replies (skip warmup traffic & auto-replies)
