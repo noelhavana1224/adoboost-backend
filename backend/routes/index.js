@@ -1472,6 +1472,22 @@ ticketsRouter.post('/', async (req, res) => {
     const id = uuidv4();
     await dbRun('INSERT INTO tickets (id,user_id,name,email,phone,subject,message) VALUES (?,?,?,?,?,?,?)',
       [id, req.userId, name||'', email||'', phone||'', subject, message]);
+    // Notify the admin team
+    try {
+      const u = await dbGet('SELECT name,email FROM users WHERE id=?', [req.userId]);
+      const { sendSystemEmail } = require('../services/emailSystem');
+      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'support@adobosolutions.com';
+      sendSystemEmail({
+        to: adminEmail,
+        subject: `🎫 New support ticket: ${subject}`,
+        html: `<h3>New Support Ticket</h3>
+         <p><b>From:</b> ${name||u?.name||''} &lt;${email||u?.email||''}&gt; ${phone?'· '+phone:''}</p>
+         <p><b>Subject:</b> ${subject}</p>
+         <p><b>Message:</b></p>
+         <p style="white-space:pre-wrap;border-left:3px solid #e2e8f0;padding-left:12px">${message}</p>
+         <p>Manage it in Admin → Tickets.</p>`,
+      }).catch(()=>{});
+    } catch {}
     res.json({ success: true, id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1509,9 +1525,11 @@ listRequestsRouter.post('/', async (req, res) => {
     try {
       const u = await dbGet('SELECT name,email FROM users WHERE id=?', [req.effectiveUserId]);
       const { sendSystemEmail } = require('../services/emailSystem');
-      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'noel@adobosolutions.com';
-      sendSystemEmail(adminEmail, `📋 New lead-list request from ${u?.name||u?.email}`,
-        `<h3>New Lead-List Request</h3>
+      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'support@adobosolutions.com';
+      sendSystemEmail({
+        to: adminEmail,
+        subject: `📋 New lead-list request from ${u?.name||u?.email}`,
+        html: `<h3>New Lead-List Request</h3>
          <p><b>From:</b> ${u?.name||''} &lt;${u?.email||''}&gt;</p>
          <ul>
            <li><b>Industries:</b> ${industries||'—'}</li>
@@ -1522,7 +1540,8 @@ listRequestsRouter.post('/', async (req, res) => {
            <li><b>Keywords:</b> ${keywords||'—'}</li>
            <li><b>Notes:</b> ${notes||'—'}</li>
          </ul>
-         <p>Manage it in Admin → Lead Requests.</p>`).catch(()=>{});
+         <p>Manage it in Admin → Lead Requests.</p>`,
+      }).catch(()=>{});
     } catch {}
     res.json({ success: true, id });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1566,9 +1585,11 @@ infraOrdersRouter.post('/', async (req, res) => {
     try {
       const u = await dbGet('SELECT name,email FROM users WHERE id=?', [req.effectiveUserId]);
       const { sendSystemEmail } = require('../services/emailSystem');
-      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'noel@adobosolutions.com';
-      sendSystemEmail(adminEmail, `🧰 New infrastructure order from ${u?.name||u?.email}`,
-        `<h3>New Done-For-You Infrastructure Order</h3>
+      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'support@adobosolutions.com';
+      sendSystemEmail({
+        to: adminEmail,
+        subject: `🧰 New infrastructure order from ${u?.name||u?.email}`,
+        html: `<h3>New Done-For-You Infrastructure Order</h3>
          <p><b>From:</b> ${u?.name||''} &lt;${u?.email||''}&gt;</p>
          <ul>
            <li><b>Provider:</b> ${b.provider}</li>
@@ -1578,7 +1599,8 @@ infraOrdersRouter.post('/', async (req, res) => {
            <li><b>First month:</b> $${b.first_month_cost} · <b>Monthly:</b> $${b.monthly_cost}</li>
            <li><b>Notes:</b> ${b.notes||'—'}</li>
          </ul>
-         <p>Manage it in Admin → Infra Orders.</p>`).catch(()=>{});
+         <p>Manage it in Admin → Infra Orders.</p>`,
+      }).catch(()=>{});
     } catch {}
     res.json({ success: true, id });
   } catch (e) { res.status(500).json({ error: e.message }); }
