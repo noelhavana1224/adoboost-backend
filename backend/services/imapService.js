@@ -158,8 +158,8 @@ async function syncInbox(account) {
 
             // ✅ Save ALL incoming emails — campaign match is a bonus, not a requirement
             await dbRun(`
-              INSERT INTO messages (id, user_id, campaign_id, from_email, from_name, subject, body, message_id, received_at, status, is_auto_reply, is_warmup)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              INSERT INTO messages (id, user_id, campaign_id, from_email, from_name, subject, body, message_id, received_at, status, is_auto_reply, is_warmup, received_account_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [
               uuidv4(),
               account.user_id,
@@ -173,6 +173,7 @@ async function syncInbox(account) {
               status,
               autoReply,
               isWarmup,
+              account.id,
             ]);
 
             // If matched to a campaign send, mark contact as replied

@@ -1064,7 +1064,7 @@ messagesRouter.use(effectiveUserMiddleware);
 
 messagesRouter.get('/inbox', async (req, res) => {
   try {
-    const { search, status, tag, category, page=1, limit=20 } = req.query;
+    const { search, status, tag, category, account, page=1, limit=20 } = req.query;
     const offset = (page-1)*limit;
     // Exclude warmup emails — they go to the dedicated Warmer Inbox
     let where=['m.user_id=?','m.is_auto_reply=0','(m.is_warmup=0 OR m.is_warmup IS NULL)','(m.archived=0 OR m.archived IS NULL)','(m.deleted=0 OR m.deleted IS NULL)']; const params=[req.effectiveUserId];
@@ -1072,15 +1072,27 @@ messagesRouter.get('/inbox', async (req, res) => {
     if (status) { where.push('m.status=?'); params.push(status); }
     if (tag) { where.push('m.tag=?'); params.push(tag); }
     if (category) { where.push('m.ai_category=?'); params.push(category); }
+    if (account) { where.push('m.received_account_id=?'); params.push(account); }
     const w='WHERE '+where.join(' AND ');
-    const messages = await dbAll(`SELECT m.*,c.name as campaign_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
+    const messages = await dbAll(`SELECT m.*,c.name as campaign_name, ea.from_email as inbox_email, ea.name as inbox_name FROM messages m LEFT JOIN campaigns c ON m.campaign_id=c.id LEFT JOIN email_accounts ea ON m.received_account_id=ea.id ${w} ORDER BY m.received_at DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}`, params);
     const total = (await dbGet(`SELECT COUNT(*) as n FROM messages m ${w}`, params)).n;
     const unread = (await dbGet(`SELECT COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND (m.is_warmup=0 OR m.is_warmup IS NULL) AND m.status='unread' AND (m.deleted=0 OR m.deleted IS NULL)`, [req.effectiveUserId])).n;
+    // Per-mailbox breakdown for the unified-inbox sidebar (real replies only)
+    const mailboxes = await dbAll(`
+      SELECT ea.id, ea.from_email, ea.name,
+        COUNT(m.id) as total,
+        SUM(CASE WHEN m.status='unread' THEN 1 ELSE 0 END) as unread
+      FROM email_accounts ea
+      LEFT JOIN messages m ON m.received_account_id=ea.id
+        AND m.is_auto_reply=0 AND (m.is_warmup=0 OR m.is_warmup IS NULL)
+        AND (m.archived=0 OR m.archived IS NULL) AND (m.deleted=0 OR m.deleted IS NULL)
+      WHERE ea.user_id=?
+      GROUP BY ea.id ORDER BY unread DESC, total DESC`, [req.effectiveUserId]);
     // AI category counts (for the smart-filter chips) — over the whole inbox, ignoring the category filter
     const catRows = await dbAll(`SELECT COALESCE(ai_category,'uncategorized') as c, COUNT(*) as n FROM messages m WHERE m.user_id=? AND m.is_auto_reply=0 AND (m.is_warmup=0 OR m.is_warmup IS NULL) AND (m.archived=0 OR m.archived IS NULL) AND (m.deleted=0 OR m.deleted IS NULL) GROUP BY ai_category`, [req.effectiveUserId]);
     const categories = {};
     catRows.forEach(r => { categories[r.c] = r.n; });
-    res.json({ messages, total, page: Number(page), unread, categories });
+    res.json({ messages, total, page: Number(page), unread, categories, mailboxes });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
