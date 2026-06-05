@@ -1678,6 +1678,29 @@ analyticsRouter.get('/deliverability', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── DNS / domain authentication health ──────────────────────────────────────
+// Check a single domain (or email) for SPF/DKIM/DMARC/MX setup.
+analyticsRouter.get('/dns-health', async (req, res) => {
+  try {
+    const { domain } = req.query;
+    if (!domain) return res.status(400).json({ error: 'domain required' });
+    const { checkDomainHealth } = require('../services/dnsHealthService');
+    const report = await checkDomainHealth(domain);
+    res.json(report);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Check all of the user's connected sending domains at once.
+analyticsRouter.get('/dns-health/all', async (req, res) => {
+  try {
+    const { checkDomainHealth, domainFromEmail } = require('../services/dnsHealthService');
+    const accts = await dbAll('SELECT from_email FROM email_accounts WHERE user_id=?', [req.effectiveUserId]);
+    const domains = [...new Set(accts.map(a => domainFromEmail(a.from_email)).filter(Boolean))];
+    const reports = await Promise.all(domains.map(d => checkDomainHealth(d)));
+    res.json({ domains: reports });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 analyticsRouter.get('/summary', async (req, res) => {
   try {
     const uid = req.effectiveUserId;
