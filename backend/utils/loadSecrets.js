@@ -32,7 +32,24 @@ function ensure(fileName, envName, generate) {
   process.env[envName] = val; // force-set (overrides any weak panel value)
 }
 
+// Load a persistent JSON blob of env vars (survives Hostinger .env wipes).
+// Used for provider credentials like PayPal that must not live in the panel .env.
+function loadJsonEnv(fileName) {
+  const file = path.join(DATA_DIR, fileName);
+  try {
+    if (fs.existsSync(file)) {
+      const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
+      for (const [k, v] of Object.entries(obj)) {
+        if (v !== null && v !== undefined && v !== '') process.env[k] = String(v);
+      }
+      console.log(`🔐 Loaded ${Object.keys(obj).length} persistent env var(s) from ${fileName}`);
+    }
+  } catch (e) { console.error(`[loadSecrets] could not read ${fileName}:`, e.message); }
+}
+
 module.exports = function loadSecrets() {
   ensure('.jwt_secret',   'JWT_SECRET',   () => crypto.randomBytes(48).toString('hex'));
   ensure('.smtp_enc_key', 'SMTP_ENC_KEY', () => crypto.randomBytes(32).toString('hex'));
+  // Persistent provider credentials (PayPal, etc.)
+  loadJsonEnv('.paypal.json');
 };
