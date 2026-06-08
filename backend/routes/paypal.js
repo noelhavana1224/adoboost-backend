@@ -33,17 +33,27 @@ const API_BASE = () => (process.env.PAYPAL_ENV === 'sandbox')
   ? 'https://api-m.sandbox.paypal.com'
   : 'https://api-m.paypal.com';
 
+// Map every PayPal plan id (monthly OR annual) → our plan slug.
 const PLAN_BY_PAYPAL = () => {
   const out = {};
-  if (process.env.PAYPAL_PLAN_STARTER) out[process.env.PAYPAL_PLAN_STARTER] = 'starter';
-  if (process.env.PAYPAL_PLAN_PRO)     out[process.env.PAYPAL_PLAN_PRO]     = 'professional';
-  if (process.env.PAYPAL_PLAN_AGENCY)  out[process.env.PAYPAL_PLAN_AGENCY]  = 'unlimited';
+  const add = (id, slug) => { if (id) out[id] = slug; };
+  add(process.env.PAYPAL_PLAN_STARTER,        'starter');
+  add(process.env.PAYPAL_PLAN_PRO,            'professional');
+  add(process.env.PAYPAL_PLAN_AGENCY,         'unlimited');
+  add(process.env.PAYPAL_PLAN_STARTER_ANNUAL, 'starter');
+  add(process.env.PAYPAL_PLAN_PRO_ANNUAL,     'professional');
+  add(process.env.PAYPAL_PLAN_AGENCY_ANNUAL,  'unlimited');
   return out;
 };
 const PAYPAL_BY_PLAN = () => ({
   starter:      process.env.PAYPAL_PLAN_STARTER,
   professional: process.env.PAYPAL_PLAN_PRO,
   unlimited:    process.env.PAYPAL_PLAN_AGENCY,
+});
+const PAYPAL_BY_PLAN_ANNUAL = () => ({
+  starter:      process.env.PAYPAL_PLAN_STARTER_ANNUAL,
+  professional: process.env.PAYPAL_PLAN_PRO_ANNUAL,
+  unlimited:    process.env.PAYPAL_PLAN_AGENCY_ANNUAL,
 });
 
 function isConfigured() {
@@ -102,11 +112,15 @@ async function applySubscription(sub) {
 
 // ── Frontend config: client id + plan ids (safe to expose) + current state ──
 router.get('/config', authMiddleware, async (req, res) => {
+  const annual = PAYPAL_BY_PLAN_ANNUAL();
+  const annualAvailable = !!(annual.starter || annual.professional || annual.unlimited);
   res.json({
-    configured: isConfigured(),
-    client_id:  process.env.PAYPAL_CLIENT_ID || null,
-    env:        process.env.PAYPAL_ENV === 'sandbox' ? 'sandbox' : 'live',
-    plans:      PAYPAL_BY_PLAN(),
+    configured:      isConfigured(),
+    client_id:       process.env.PAYPAL_CLIENT_ID || null,
+    env:             process.env.PAYPAL_ENV === 'sandbox' ? 'sandbox' : 'live',
+    plans:           PAYPAL_BY_PLAN(),
+    plans_annual:    annual,
+    annual_available: annualAvailable,
   });
 });
 
