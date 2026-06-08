@@ -92,6 +92,8 @@ app.use(cors({
 // ── Billing (Lemon Squeezy) — MUST mount before express.json() so the webhook
 // receives the raw body for HMAC signature verification. ──────────────────────
 try { app.use('/api/billing', require('./routes/billing')); } catch (e) { console.error('[startup] billing:', e.message); }
+// PayPal webhook also needs the raw body — mount before express.json()
+try { app.use('/api/paypal', require('./routes/paypal')); } catch (e) { console.error('[startup] paypal:', e.message); }
 
 app.use(express.json({ limit: '10mb' }));
 

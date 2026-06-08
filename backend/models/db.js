@@ -489,6 +489,8 @@ function runMigrations() {
     `ALTER TABLE sends ADD COLUMN subject_variant TEXT`,
     // ── Unified inbox: which connected mailbox received this message ──
     `ALTER TABLE messages ADD COLUMN received_account_id TEXT`,
+    // ── PayPal subscription id (so we can cancel / reconcile) ──
+    `ALTER TABLE users ADD COLUMN paypal_subscription_id TEXT`,
     // ── Notification preferences (JSON map of type→bool). NULL = all enabled by default. ──
     `ALTER TABLE users ADD COLUMN notification_prefs TEXT`,
     // tracks whether we've already notified about a low-credit threshold this cycle
