@@ -284,8 +284,9 @@ if (backupService) {
     try { await backupService.emailWeeklyBackup(); }
     catch (e) { console.error('Weekly backup email error:', e.message); }
   });
-  // Run one backup ~30s after startup so there's always a fresh snapshot
-  setTimeout(() => { backupService.runBackup().catch(() => {}); }, 30000);
+  // Run one backup ~30s after startup so there's always a fresh snapshot —
+  // but skip if a backup from the last 6h exists (Passenger restarts often).
+  setTimeout(() => { backupService.runBackup({ skipIfFresherThanHours: 6 }).catch(() => {}); }, 30000);
 }
 
 // ── Nightly cleanup — purge soft-deleted messages older than 30 days ────────
@@ -301,7 +302,38 @@ cron.schedule('0 2 * * *', async () => {
     if (result.changes > 0) {
       console.log(`🧹 Nightly cleanup: purged ${result.changes} soft-deleted message(s) older than 30 days`);
     }
+    // Warmup traffic has no long-term value and dominates the table (99% of
+    // rows) — prune anything older than 30 days to keep the DB lean.
+    const wu = await dbRun(`DELETE FROM messages WHERE is_warmup=1 AND received_at < datetime('now','-30 days')`);
+    if (wu.changes > 0) {
+      console.log(`🧹 Nightly cleanup: purged ${wu.changes} warmup message(s) older than 30 days`);
+    }
   } catch (e) { console.error('Cleanup error:', e.message); }
+});
+
+// ── Auto ramp-up of sending limits ──────────────────────────────────────────
+// Inboxes that have warmed for 7+ days with health ≥70 earn +3 to their daily
+// cap each night, up to 40/day. Mirrors how senders manually ramp fresh
+// domains, but automated across the whole fleet. Inboxes whose health drops
+// below 40 get pulled back down to a safe 5/day until they recover.
+cron.schedule('15 0 * * *', async () => {
+  try {
+    const { dbRun } = require('./models/db');
+    const up = await dbRun(`
+      UPDATE email_accounts
+      SET daily_limit = MIN(COALESCE(daily_limit,5) + 3, 40)
+      WHERE warmup_enabled=1 AND COALESCE(warmup_health,0) >= 70
+        AND COALESCE(warmup_days,0) >= 7 AND COALESCE(daily_limit,5) < 40
+        AND status='active'`);
+    const down = await dbRun(`
+      UPDATE email_accounts
+      SET daily_limit = 5
+      WHERE warmup_enabled=1 AND COALESCE(warmup_health,0) < 40
+        AND COALESCE(daily_limit,5) > 5`);
+    if (up.changes || down.changes) {
+      console.log(`📈 Auto ramp-up: raised ${up.changes} inbox cap(s), throttled ${down.changes} low-health inbox(es)`);
+    }
+  } catch (e) { console.error('Ramp-up error:', e.message); }
 });
 
 // ── Start server ───────────────────────────────────────────────────────────

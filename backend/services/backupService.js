@@ -29,8 +29,25 @@ function ts() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-async function runBackup() {
+// Newest backup age in hours (Infinity if none)
+function newestBackupAgeHours() {
   try {
+    if (!fs.existsSync(BACKUP_DIR)) return Infinity;
+    const newest = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.startsWith('adoboost-') && f.endsWith('.db'))
+      .map(f => fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs)
+      .sort((a, b) => b - a)[0];
+    return newest ? (Date.now() - newest) / 3600000 : Infinity;
+  } catch { return Infinity; }
+}
+
+async function runBackup(opts = {}) {
+  try {
+    // Passenger recycles the app frequently on this host; without this guard
+    // every restart produced a full 57MB snapshot (hourly churn, ~1.3GB/day).
+    if (opts.skipIfFresherThanHours && newestBackupAgeHours() < opts.skipIfFresherThanHours) {
+      return { success: true, skipped: true };
+    }
     if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
     // 1. Checkpoint WAL so the snapshot is fully up to date and compact
