@@ -407,6 +407,9 @@ async function processPendingSends() {
     WHERE s.status='pending' AND s.scheduled_at<=?
     AND camp.status='active'
     AND c.unsubscribed=0 AND c.bounced=0
+    -- Bounce protection: skip contacts verification later flagged invalid,
+    -- even if their send was queued before the list was verified.
+    AND (c.email_status IS NULL OR c.email_status != 'invalid')
     -- Auto-pause: never send if this contact already replied in this campaign
     AND NOT EXISTS (
       SELECT 1 FROM sends sr
