@@ -779,6 +779,9 @@ campaignsRouter.get('/', async (req, res) => {
       (SELECT COUNT(*) FROM sends WHERE campaign_id=c.id AND clicked_at IS NOT NULL) as clicked_count,
       (SELECT COUNT(*) FROM sends WHERE campaign_id=c.id AND replied=1) as replied_count,
       (SELECT COUNT(*) FROM sends WHERE campaign_id=c.id AND bounced=1) as bounced_count,
+      (SELECT COUNT(*) FROM sends WHERE campaign_id=c.id AND status='pending') as pending_count,
+      (SELECT MIN(scheduled_at) FROM sends WHERE campaign_id=c.id) as first_scheduled_at,
+      (SELECT MAX(scheduled_at) FROM sends WHERE campaign_id=c.id) as last_scheduled_at,
       l.name as list_name, ea.from_email as account_email
       FROM campaigns c
       LEFT JOIN lists l ON c.list_id=l.id
@@ -931,18 +934,35 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     );
     if (!contacts.length) return res.status(400).json({ error: 'No active contacts in list (invalid emails are skipped to protect deliverability)' });
 
-    // Fetch account settings + user timezone for humanized scheduling
-    const emailAccount = await dbGet('SELECT * FROM email_accounts WHERE id=?', [c.email_account_id]);
+    // Fetch the FULL rotation pool (the inboxes the client assigned) + timezone.
+    // The scheduler uses the pool's combined daily capacity so the timeline is
+    // realistic and every assigned inbox carries a share.
+    let rotIds = [];
+    try { rotIds = JSON.parse(c.rotation_account_ids || '[]'); } catch {}
+    if (!rotIds.length && c.email_account_id) rotIds = [c.email_account_id];
+    let pool = [];
+    if (rotIds.length) {
+      pool = await dbAll(
+        `SELECT * FROM email_accounts WHERE user_id=? AND id IN (${rotIds.map(() => '?').join(',')})`,
+        [req.effectiveUserId, ...rotIds]
+      );
+    }
+    if (!pool.length) { const ea = await dbGet('SELECT * FROM email_accounts WHERE id=?', [c.email_account_id]); if (ea) pool = [ea]; }
     const userRow      = await dbGet('SELECT timezone FROM users WHERE id=?', [req.effectiveUserId]);
     const userTimezone = userRow?.timezone || 'UTC';
     const now = new Date();
 
-    // Email sends — humanized schedule
-    const scheduledSends = emailSeqs.length ? humanScheduleSends(contacts, emailSeqs, emailAccount || {}, now, userTimezone) : [];
+    // Scheduled campaigns fire at the exact requested time; immediate ones start now.
+    const exactStartAt = (c.schedule_type === 'scheduled' && c.scheduled_at) ? c.scheduled_at : null;
+
+    // Email sends — humanized, rotation-aware schedule
+    const scheduledSends = emailSeqs.length
+      ? humanScheduleSends(contacts, emailSeqs, pool, now, userTimezone, { exactStartAt })
+      : [];
     for (const item of scheduledSends) {
       await dbRun(
         'INSERT INTO sends (id,campaign_id,sequence_id,contact_id,email_account_id,status,scheduled_at) VALUES (?,?,?,?,?,?,?)',
-        [uuidv4(), c.id, item.sequence.id, item.contact.id, c.email_account_id, 'pending', item.scheduled_at]
+        [uuidv4(), c.id, item.sequence.id, item.contact.id, item.email_account_id || c.email_account_id, 'pending', item.scheduled_at]
       );
     }
 
@@ -993,6 +1013,63 @@ campaignsRouter.post('/:id/retry-failed', async (req, res) => {
 campaignsRouter.post('/:id/pause', async (req, res) => {
   try { await dbRun(`UPDATE campaigns SET status='paused' WHERE id=? AND user_id=?`, [req.params.id, req.effectiveUserId]); res.json({ success: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Re-schedule PENDING sends with the rotation-aware engine ────────────────
+// Safe repair: re-times only pending rows across the full inbox pool. Sent rows
+// are never touched, so an already-contacted prospect can never get a duplicate
+// first touch. Campaign must be paused. Reversible (caller should snapshot).
+campaignsRouter.post('/:id/reschedule', async (req, res) => {
+  try {
+    const c = await dbGet('SELECT * FROM campaigns WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    if (!c) return res.status(404).json({ error: 'Not found' });
+    if (c.status === 'active') return res.status(400).json({ error: 'Pause the campaign before rescheduling.' });
+
+    const seqs = await dbAll('SELECT * FROM sequences WHERE campaign_id=? ORDER BY step_number', [c.id]);
+    const emailSeqs = seqs.filter(s => !s.step_type || s.step_type === 'email');
+    if (!emailSeqs.length) return res.status(400).json({ error: 'No email steps to reschedule.' });
+
+    // Rotation pool (assigned inboxes)
+    let rotIds = [];
+    try { rotIds = JSON.parse(c.rotation_account_ids || '[]'); } catch {}
+    if (!rotIds.length && c.email_account_id) rotIds = [c.email_account_id];
+    let pool = rotIds.length
+      ? await dbAll(`SELECT * FROM email_accounts WHERE user_id=? AND id IN (${rotIds.map(() => '?').join(',')})`, [req.effectiveUserId, ...rotIds])
+      : [];
+    if (!pool.length) { const ea = await dbGet('SELECT * FROM email_accounts WHERE id=?', [c.email_account_id]); if (ea) pool = [ea]; }
+    if (!pool.length) return res.status(400).json({ error: 'No sending inboxes assigned.' });
+
+    const userRow = await dbGet('SELECT timezone FROM users WHERE id=?', [req.effectiveUserId]);
+    const tz = userRow?.timezone || 'UTC';
+
+    // Distinct contacts that still have pending sends in this campaign
+    const pendingContacts = await dbAll(
+      `SELECT DISTINCT ct.* FROM contacts ct
+       JOIN sends s ON s.contact_id=ct.id
+       WHERE s.campaign_id=? AND s.status='pending'`, [c.id]);
+    if (!pendingContacts.length) return res.json({ success: true, rescheduled: 0, message: 'No pending sends.' });
+
+    const exactStartAt = (c.schedule_type === 'scheduled' && c.scheduled_at) ? c.scheduled_at : null;
+    const plan = humanScheduleSends(pendingContacts, emailSeqs, pool, new Date(), tz, { exactStartAt });
+
+    // Map (contact_id|sequence_id) → new schedule
+    const map = {};
+    for (const item of plan) map[`${item.contact.id}|${item.sequence.id}`] = item;
+
+    // Apply ONLY to pending rows
+    const pendingRows = await dbAll(`SELECT id, contact_id, sequence_id FROM sends WHERE campaign_id=? AND status='pending'`, [c.id]);
+    let updated = 0;
+    for (const row of pendingRows) {
+      const item = map[`${row.contact_id}|${row.sequence_id}`];
+      if (!item) continue;
+      await dbRun('UPDATE sends SET scheduled_at=?, email_account_id=? WHERE id=?',
+        [item.scheduled_at, item.email_account_id || c.email_account_id, row.id]);
+      updated++;
+    }
+    const firstSend = plan[0]?.scheduled_at;
+    const lastSend  = plan[plan.length - 1]?.scheduled_at;
+    res.json({ success: true, rescheduled: updated, inboxes: pool.length, first_send: firstSend, last_send: lastSend });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 campaignsRouter.post('/:id/resume', async (req, res) => {

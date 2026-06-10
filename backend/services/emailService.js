@@ -74,24 +74,41 @@ function isWithinSendingWindow(account, timezone = 'UTC') {
  * whatever rows are due (scheduled_at <= now UTC) — no further timezone math needed.
  *
  * Logic:
- *  - Contacts are batched by account's daily_limit (one batch = one calendar day)
- *  - Each batch's send times are randomly distributed within the account's
- *    working window (send_window_start → send_window_end) in the user's timezone
+ *  - Contacts are batched by the ROTATION POOL's COMBINED daily capacity
+ *    (sum of every assigned inbox's daily_limit) — one batch = one calendar day.
+ *    This is the key fix: a 90-inbox campaign sends ~90× per day, not 1×.
+ *  - Each send is assigned a specific inbox round-robin across the pool so every
+ *    inbox carries an even share and none exceeds its own daily_limit.
+ *  - Each batch's send times are randomly distributed within the working window
+ *    (send_window_start → send_window_end) in the user's timezone
  *  - Minimum 1-minute spacing enforced between any two sends
- *  - If launched during the window, today's sends start from now+5min (local)
- *  - If launched after window, first sends begin tomorrow (local)
+ *  - opts.exactStartAt (Date|ISO): anchor the very first send to this exact time
+ *    (used for scheduled campaigns — "fire at 1pm EST" means 1pm EST, no jitter)
+ *  - Else: if launched during the window start +5min; if after window, tomorrow
  *
  * @param {Array}  contacts   - contact rows
  * @param {Array}  sequences  - sequence rows (ordered by step_number)
- * @param {Object} account    - email_account row
+ * @param {Object|Array} accountsInput - the rotation pool (array) or single account
  * @param {Date}   launchTime - when the campaign was launched (default: now)
  * @param {string} timezone   - IANA timezone of the user (default: 'UTC')
- * @returns {Array} [{contact, sequence, scheduled_at}]
+ * @param {Object} opts        - { exactStartAt }
+ * @returns {Array} [{contact, sequence, scheduled_at, email_account_id}]
  */
-function humanScheduleSends(contacts, sequences, account, launchTime = new Date(), timezone = 'UTC') {
-  const dailyLimit = Math.max(1, account.daily_limit  || 50);
-  const winStart   = Number(account.send_window_start ?? 8);
-  const winEnd     = Number(account.send_window_end   ?? 17);
+function humanScheduleSends(contacts, sequences, accountsInput, launchTime = new Date(), timezone = 'UTC', opts = {}) {
+  // Normalize to a pool of active accounts
+  let pool = Array.isArray(accountsInput) ? accountsInput.slice() : [accountsInput];
+  pool = pool.filter(a => a && (!a.status || a.status === 'active'));
+  if (!pool.length) pool = [accountsInput && !Array.isArray(accountsInput) ? accountsInput : {}];
+
+  const perAcctLimit = pool.map(a => Math.max(1, a.daily_limit || 50));
+  const dailyLimit   = perAcctLimit.reduce((s, n) => s + n, 0); // COMBINED pool capacity/day
+  // Use the first account's window (campaigns share a window in practice)
+  const winStart   = Number(pool[0].send_window_start ?? 8);
+  const winEnd     = Number(pool[0].send_window_end   ?? 17);
+
+  // Exact-start anchor (scheduled campaigns) — overrides the launchTime jitter
+  const exactStart = opts.exactStartAt ? new Date(opts.exactStartAt) : null;
+  if (exactStart && !isNaN(exactStart.getTime())) launchTime = exactStart;
 
   // ── Convert launch time into the user's local time ────────────────────────
   // getTzOffsetMs = UTC_ms − local_ms  →  local_ms = UTC_ms − offsetMs
@@ -113,7 +130,10 @@ function humanScheduleSends(contacts, sequences, account, launchTime = new Date(
   let startDayOffset = 0;
   let day0WinStart   = winStart;
 
-  if (localNowHour >= winEnd) {
+  if (exactStart) {
+    // Scheduled campaign: anchor day-0 to the exact requested local time, no jitter.
+    day0WinStart = localNowHour + localNowMin / 60 + localLaunchDate.getUTCSeconds() / 3600;
+  } else if (localNowHour >= winEnd) {
     startDayOffset = 1;                                   // past window → start tomorrow
   } else if (localNowHour >= winStart) {
     day0WinStart = localNowHour + (localNowMin + 5) / 60; // in window  → start +5 min
@@ -147,16 +167,34 @@ function humanScheduleSends(contacts, sequences, account, launchTime = new Date(
         offsets[i] = offsets[i - 1] + 1 + Math.random() * 2;
       }
     }
+    // Exact-start: pin the very first send of day 0 to the requested minute
+    if (exactStart && dayOffset === startDayOffset && offsets.length) offsets[0] = 0;
+
+    // Assign each contact an inbox round-robin across the pool, never exceeding
+    // any single inbox's daily_limit. (One inbox owns all of a contact's steps.)
+    const daySlots = [];
+    {
+      const used = new Array(pool.length).fill(0);
+      let j = 0, guard = 0, max = batch.length * (pool.length + 1) + 10;
+      while (daySlots.length < batch.length && guard++ < max) {
+        if (used[j] < perAcctLimit[j]) { daySlots.push(j); used[j]++; }
+        j = (j + 1) % pool.length;
+      }
+      while (daySlots.length < batch.length) daySlots.push(daySlots.length % pool.length);
+    }
 
     // Midnight of this batch's day (local time, as shifted UTC ms)
     const thisDayLocalMidnightMs = localMidnightMs + dayOffset * 86_400_000;
 
     for (let i = 0; i < batch.length; i++) {
       const contact = batch[i];
+      const acct = pool[daySlots[i]] || pool[0];
 
       // Base send time = day midnight + window offset + random seconds
       const totalMinutesMs  = (effectiveWinStart * 60 + offsets[i]) * 60_000;
-      const randomSecondsMs = Math.floor(Math.random() * 60) * 1_000;
+      // Exact-start first send fires on the precise second; others get 0–59s jitter
+      const pinExact = exactStart && dayOffset === startDayOffset && i === 0;
+      const randomSecondsMs = pinExact ? 0 : Math.floor(Math.random() * 60) * 1_000;
       let prevLocalMs = thisDayLocalMidnightMs + totalMinutesMs + randomSecondsMs;
 
       for (const seq of sequences) {
@@ -189,7 +227,7 @@ function humanScheduleSends(contacts, sequences, account, launchTime = new Date(
           }
         }
 
-        sends.push({ contact, sequence: seq, scheduled_at: localMsToUtcISO(seqLocalMs) });
+        sends.push({ contact, sequence: seq, scheduled_at: localMsToUtcISO(seqLocalMs), email_account_id: acct.id });
         prevLocalMs = seqLocalMs;
       }
     }
