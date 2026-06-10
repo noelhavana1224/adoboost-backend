@@ -401,7 +401,22 @@ async function processPendingSends() {
           // weighting; the hard daily/hourly checks below are the real guardrails.
           const chosen = pickWeightedAccount(poolCache[key], hourlyCache);
           if (chosen && chosen.id !== send.email_account_id) {
-            send = { ...send, ...chosen, email_account_id: chosen.id, acc_limit: chosen.daily_limit || 50, smtp_pass: chosen.password };
+            // CRITICAL: `chosen` is a full email_accounts row — spreading it
+            // clobbers the send row's identity columns (id, status, created_at).
+            // Losing `id` made the post-send UPDATE miss, so the row stayed
+            // `pending` and was re-sent every cycle. Preserve send identity.
+            send = {
+              ...send, ...chosen,
+              id: send.id,
+              status: send.status,
+              contact_id: send.contact_id,
+              campaign_id: send.campaign_id,
+              sequence_id: send.sequence_id,
+              scheduled_at: send.scheduled_at,
+              email_account_id: chosen.id,
+              acc_limit: chosen.daily_limit || 50,
+              smtp_pass: chosen.password,
+            };
           }
         }
       } catch {}
