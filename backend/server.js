@@ -302,13 +302,19 @@ cron.schedule('0 2 * * *', async () => {
     if (result.changes > 0) {
       console.log(`🧹 Nightly cleanup: purged ${result.changes} soft-deleted message(s) older than 30 days`);
     }
-    // Warmup traffic has no long-term value and dominates the table (99% of
-    // rows) — prune anything older than 30 days to keep the DB lean.
-    const wu = await dbRun(`DELETE FROM messages WHERE is_warmup=1 AND received_at < datetime('now','-30 days')`);
-    if (wu.changes > 0) {
-      console.log(`🧹 Nightly cleanup: purged ${wu.changes} warmup message(s) older than 30 days`);
-    }
   } catch (e) { console.error('Cleanup error:', e.message); }
+});
+
+// ── Warmer-inbox retention — keep only the last 24h, prune the rest ─────────
+// Warmup traffic has zero long-term value and dominates the messages table.
+// Runs every 3 hours so the Warmer Inbox only ever holds ~1 day of mail and
+// disk stays tiny.
+cron.schedule('0 */3 * * *', async () => {
+  try {
+    const { dbRun } = require('./models/db');
+    const r = await dbRun(`DELETE FROM messages WHERE is_warmup=1 AND received_at < datetime('now','-24 hours')`);
+    if (r.changes > 0) console.log(`🧹 Warmer-inbox cleanup: purged ${r.changes} warmup message(s) older than 24h`);
+  } catch (e) { console.error('Warmup prune error:', e.message); }
 });
 
 // ── Auto ramp-up of sending limits ──────────────────────────────────────────

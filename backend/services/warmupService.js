@@ -192,6 +192,19 @@ function getDailyTarget(account) {
   return Math.min(startCount + increment * warmupDays, maxCount);
 }
 
+// Is this inbox hosted on Hostinger? (smtp/imap host or the well-known servers)
+function isHostinger(account) {
+  const h = `${account.host || ''} ${account.imap_host || ''}`.toLowerCase();
+  return h.includes('hostinger');
+}
+
+// Hard provider send cap per day. Hostinger throttles at ~100/inbox/day — we
+// stay under it with a safety margin so warmup never eats the budget the
+// campaign needs (a key cause of rejections/bounces on Hostinger inboxes).
+function providerDailyCap(account) {
+  return isHostinger(account) ? 90 : Infinity;
+}
+
 // ── Send one warmup email ───────────────────────
 async function sendWarmupEmail(fromAccount, toAccount) {
   try {
@@ -328,8 +341,14 @@ async function autoReplyWarmupEmails(account) {
           await new Promise(res => fetch.once('end', res));
 
           let replied = 0;
+          // Not every warmup needs a reply — real conversations don't get a
+          // 100% reply rate, and each reply is another send against the daily
+          // provider cap (esp. Hostinger's 100/day). Reply to at most 2 per
+          // run, ~50% of the time. Unmatched ones are still marked read above.
+          const REPLY_CAP = 2;
           for (const raw of emails) {
             try {
+              if (replied >= REPLY_CAP) break;
               const parsed     = await simpleParser(raw);
               const fromEmail  = parsed.from?.value?.[0]?.address?.toLowerCase();
               if (!fromEmail) continue;
@@ -339,6 +358,9 @@ async function autoReplyWarmupEmails(account) {
                 [fromEmail]
               );
               if (!partner) continue;
+
+              // ~50% chance to actually reply — keeps it human and low-volume
+              if (Math.random() > 0.5) continue;
 
               // Small random delay before replying (5-25s) — human pacing
               await sleep(5000 + Math.floor(Math.random() * 20000));
@@ -426,12 +448,25 @@ async function processWarmup() {
 
         const target = getDailyTarget(account);
 
-        // Count already sent today
+        // Count already sent today (warmup sends + replies)
         const sentRow = await dbGet(`
           SELECT COUNT(*) as c FROM warmup_logs
-          WHERE account_id=? AND direction='sent' AND status='sent' AND DATE(created_at)=?
+          WHERE account_id=? AND status='sent' AND DATE(created_at)=?
         `, [account.id, today]);
         const alreadySent = sentRow?.c || 0;
+
+        // ── Provider daily cap (Hostinger = 100/day) ──
+        // Total = warmup today + campaign sends today (email_accounts.sent_today).
+        // If we're near the provider cap, skip warmup so the CAMPAIGN keeps its
+        // budget — warmup must never push a Hostinger inbox over its limit.
+        const cap = providerDailyCap(account);
+        if (cap !== Infinity) {
+          const campaignToday = account.sent_today || 0;
+          if (alreadySent + campaignToday >= cap) {
+            console.log(`🛑 Warmup skipped for ${account.from_email} — at provider cap (${alreadySent} warmup + ${campaignToday} campaign ≥ ${cap}/day)`);
+            continue;
+          }
+        }
 
         if (alreadySent >= target) {
           // Daily target reached — schedule an auto-reply check at a random time

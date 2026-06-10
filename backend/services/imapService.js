@@ -29,14 +29,17 @@ async function syncInbox(account) {
   const Imap = require('imap');
   const { simpleParser } = require('mailparser');
 
-  // Use last_synced_at if available, otherwise last 7 days
+  // Use last_synced_at if available, otherwise last 2 days.
+  // (Was 7 days — that pulled a week of OLD mailbox history into the inbox on
+  // first connect, including stale warmup chatter. 2 days is plenty to catch
+  // recent replies without importing old mail.)
   let sinceDate;
   if (account.last_synced_at) {
     sinceDate = new Date(account.last_synced_at);
     sinceDate.setHours(sinceDate.getHours() - 1); // 1hr overlap to catch stragglers
   } else {
     sinceDate = new Date();
-    sinceDate.setDate(sinceDate.getDate() - 7);
+    sinceDate.setDate(sinceDate.getDate() - 2);
   }
   const sinceStr = sinceDate.toISOString().split('T')[0];
 
