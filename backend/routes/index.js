@@ -889,11 +889,30 @@ campaignsRouter.put('/:id', async (req, res) => {
        all_hours?1:0, start_immediately?1:0, visibility||'everyone', liIds[0]||null, JSON.stringify(liIds),
        req.params.id, req.effectiveUserId]);
     if (sequences) {
-      await dbRun('DELETE FROM sequences WHERE campaign_id=?', [req.params.id]);
+      // Update IN PLACE by step position so sequence IDs stay stable. A plain
+      // DELETE+reinsert throws FOREIGN KEY failed once the campaign has sends
+      // referencing these sequence rows (e.g. editing a launched campaign).
+      const existing = await dbAll('SELECT id FROM sequences WHERE campaign_id=? ORDER BY step_number', [req.params.id]);
       for (let i=0; i<sequences.length; i++) {
         const s=sequences[i];
-        await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note,subject_b) VALUES (?,?,?,?,?,?,?,?,?,?)',
-          [uuidv4(), req.params.id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'', s.subject_b||'']);
+        if (existing[i]) {
+          await dbRun('UPDATE sequences SET step_number=?,subject=?,body=?,delay_days=?,delay_hours=?,step_type=?,linkedin_note=?,subject_b=? WHERE id=?',
+            [i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'', s.subject_b||'', existing[i].id]);
+        } else {
+          await dbRun('INSERT INTO sequences (id,campaign_id,step_number,subject,body,delay_days,delay_hours,step_type,linkedin_note,subject_b) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            [uuidv4(), req.params.id, i+1, s.subject||'', s.body||'', s.delay_days||0, s.delay_hours||0, s.step_type||'email', s.linkedin_note||'', s.subject_b||'']);
+        }
+      }
+      // Remove any leftover steps the user deleted — but only if no sends
+      // reference them (otherwise keep the row to preserve FK integrity/history).
+      for (let j=sequences.length; j<existing.length; j++) {
+        const refRow = await dbGet('SELECT 1 AS x FROM sends WHERE sequence_id=? LIMIT 1', [existing[j].id]);
+        if (!refRow) {
+          await dbRun('DELETE FROM sequences WHERE id=?', [existing[j].id]);
+        } else {
+          // Has sends — cancel its still-pending sends so it stops firing, keep the row.
+          await dbRun("UPDATE sends SET status='cancelled_step_removed' WHERE sequence_id=? AND status='pending'", [existing[j].id]);
+        }
       }
     }
     res.json({ success: true });

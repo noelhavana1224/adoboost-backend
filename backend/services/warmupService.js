@@ -261,9 +261,9 @@ async function sendWarmupEmail(fromAccount, toAccount) {
           try {
             const { createNotification } = require('./notify');
             createNotification(fromAccount.user_id, 'inbox_health', {
-              title: '⚠️ Inbox disconnected',
-              body: `${fromAccount.from_email} failed to authenticate and was paused. Reconnect it to keep warmup and sending running.`,
-              link: '/email-accounts',
+              title: '⚠️ Inbox authentication failing',
+              body: `${fromAccount.from_email} is failing to authenticate during warmup. Check its password, then use "Reconnect inboxes" on the Email Warmup tab to retest in bulk.`,
+              link: '/settings/warmup',
               icon: 'mail-warning',
             });
           } catch {}
