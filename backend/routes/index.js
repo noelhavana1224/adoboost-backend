@@ -2297,15 +2297,27 @@ warmupRouter.get('/logs/:accountId', async (req, res) => {
 warmupRouter.get('/stats', async (req, res) => {
   try {
     const accounts = await dbAll('SELECT id, from_email, warmup_enabled, warmup_health, warmup_days, last_warmup_at FROM email_accounts WHERE user_id=?', [req.effectiveUserId]);
+    if (!accounts.length) return res.json([]);
     const today = new Date().toISOString().split('T')[0];
-    const stats = [];
-    for (const acc of accounts) {
-      const sentToday = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='sent' AND DATE(created_at)=?`, [acc.id, today]);
-      const failedToday = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='failed' AND DATE(created_at)=?`, [acc.id, today]);
-      const totalSent = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='sent' AND status='sent'`, [acc.id]);
-      const totalReplied = await dbGet(`SELECT COUNT(*) as c FROM warmup_logs WHERE account_id=? AND direction='replied' AND status='sent'`, [acc.id]);
-      stats.push({ ...acc, sent_today: sentToday?.c||0, failed_today: failedToday?.c||0, total_sent: totalSent?.c||0, total_replied: totalReplied?.c||0 });
-    }
+    // ONE aggregate query for ALL accounts (was 4 queries × N accounts = an N+1
+    // that timed out at ~200 inboxes and stalled the whole app).
+    const rows = await dbAll(
+      `SELECT account_id,
+        SUM(CASE WHEN direction='sent'    AND status='sent'   AND DATE(created_at)=? THEN 1 ELSE 0 END) AS sent_today,
+        SUM(CASE WHEN direction='sent'    AND status='failed' AND DATE(created_at)=? THEN 1 ELSE 0 END) AS failed_today,
+        SUM(CASE WHEN direction='sent'    AND status='sent'   THEN 1 ELSE 0 END) AS total_sent,
+        SUM(CASE WHEN direction='replied' AND status='sent'   THEN 1 ELSE 0 END) AS total_replied
+       FROM warmup_logs
+       WHERE account_id IN (SELECT id FROM email_accounts WHERE user_id=?)
+       GROUP BY account_id`,
+      [today, today, req.effectiveUserId]
+    );
+    const byAcct = {};
+    rows.forEach(r => { byAcct[r.account_id] = r; });
+    const stats = accounts.map(acc => {
+      const r = byAcct[acc.id] || {};
+      return { ...acc, sent_today: r.sent_today||0, failed_today: r.failed_today||0, total_sent: r.total_sent||0, total_replied: r.total_replied||0 };
+    });
     res.json(stats);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

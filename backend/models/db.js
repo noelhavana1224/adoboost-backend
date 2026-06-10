@@ -257,6 +257,8 @@ function initSchema() {
       error TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (account_id) REFERENCES email_accounts(id))`);
+    // Index for warmup stats aggregation (was a full scan per account)
+    db.run(`CREATE INDEX IF NOT EXISTS idx_warmup_logs_acct ON warmup_logs(account_id, created_at)`);
 
     // AI usage logs
     db.run(`CREATE TABLE IF NOT EXISTS ai_usage_logs (
