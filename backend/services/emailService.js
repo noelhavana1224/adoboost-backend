@@ -391,7 +391,7 @@ async function processPendingSends() {
     SELECT s.*,
       c.email,c.first_name,c.last_name,c.company,c.title,c.website,c.custom_fields,
       seq.subject,seq.subject_b,seq.body,
-      camp.track_opens,camp.track_clicks,camp.status as campaign_status,camp.rotation_account_ids,
+      camp.track_opens,camp.track_clicks,camp.status as campaign_status,camp.rotation_account_ids,camp.timezone as campaign_timezone,
       ea.host,ea.port,ea.secure,ea.username,ea.password as smtp_pass,
       ea.from_name,ea.from_email,ea.signature,
       ea.daily_limit as acc_limit,ea.sent_today,
@@ -465,7 +465,11 @@ async function processPendingSends() {
     // Grace: if the send is more than 4h overdue we send anyway (prevents indefinite delay).
     const gracePeriodMs = 4 * 60 * 60 * 1000;
     const isOverdue     = Date.now() - new Date(send.scheduled_at).getTime() > gracePeriodMs;
-    if (!isOverdue && !isWithinSendingWindow(send, send.user_timezone || 'UTC')) {
+    // Use the CAMPAIGN's timezone (matches how the schedule was built) so the
+    // window check agrees with the scheduled_at times. Falling back to the
+    // user's profile tz only if the campaign has none.
+    const sendTz = send.campaign_timezone || send.user_timezone || 'UTC';
+    if (!isOverdue && !isWithinSendingWindow(send, sendTz)) {
       // Outside window — skip for now; cron will retry once window opens
       continue;
     }
