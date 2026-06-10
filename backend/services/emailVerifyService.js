@@ -83,13 +83,20 @@ async function verifyContacts(userId, listId, jobId) {
   const BATCH = 10;
   for (let i = 0; i < contacts.length; i += BATCH) {
     const slice = contacts.slice(i, i + BATCH);
+    // Per-contact try/catch so one transient DB lock or DNS hiccup can't abort
+    // the whole job — the run completes and bad rows just stay unverified.
     await Promise.all(slice.map(async (c) => {
-      const { status, reason } = await verifyEmail(c.email, mxCache);
-      await dbRun(
-        'UPDATE contacts SET email_status=?, email_check_reason=?, email_checked_at=? WHERE id=?',
-        [status, reason, new Date().toISOString(), c.id]
-      );
-      if (job) { job.done++; job[status] = (job[status] || 0) + 1; }
+      try {
+        const { status, reason } = await verifyEmail(c.email, mxCache);
+        await dbRun(
+          'UPDATE contacts SET email_status=?, email_check_reason=?, email_checked_at=? WHERE id=?',
+          [status, reason, new Date().toISOString(), c.id]
+        );
+        if (job) { job.done++; job[status] = (job[status] || 0) + 1; }
+      } catch (err) {
+        if (job) { job.done++; job.errors = (job.errors || 0) + 1; }
+        console.error('[verify] contact failed:', c.email, err.message);
+      }
     }));
   }
   if (job) { job.status = 'done'; job.finishedAt = Date.now(); }

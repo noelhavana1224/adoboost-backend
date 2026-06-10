@@ -15,6 +15,11 @@ function getDb() {
     db = new sqlite3.Database(DB_PATH);
     db.run('PRAGMA journal_mode = WAL');
     db.run('PRAGMA foreign_keys = ON');
+    // Wait up to 15s for a lock instead of failing instantly with SQLITE_BUSY.
+    // Without this, concurrent writes (campaign sends + warmup + verification)
+    // crash with "database is locked" under load.
+    db.run('PRAGMA busy_timeout = 15000');
+    db.configure && db.configure('busyTimeout', 15000);
     console.log(`📦 Database: ${DB_PATH}`);
     initSchema();
     runMigrations();
