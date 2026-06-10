@@ -232,12 +232,22 @@ async function sendWarmupEmail(fromAccount, toAccount) {
       VALUES (?,?,'sent',?,'Warmup email','failed',?,?)
     `, [uuidv4(), fromAccount.id, toAccount.from_email, e.message, new Date().toISOString()]);
 
-    // ── Detect auth failures and notify the account owner (once per 24h) ──
+    // ── Detect REAL auth failures (wrong password) vs transient rate limits ──
+    // Hostinger returns "Invalid login: 450 4.7.1 too many AUTH commands" and
+    // "451 Ratelimit" for throttling — these contain "auth"/"login" but are NOT
+    // credential problems. Excluding them stops false "inbox disconnected" alerts.
     const errMsg = e.message?.toLowerCase() || '';
-    const isAuthFail = e.code === 'EAUTH' ||
-      errMsg.includes('authentication') || errMsg.includes('535') ||
-      errMsg.includes('invalid credentials') || errMsg.includes('username and password') ||
-      errMsg.includes('login failed') || errMsg.includes('auth');
+    const isRateLimit =
+      errMsg.includes('too many') || errMsg.includes('ratelimit') ||
+      errMsg.includes('rate limit') || errMsg.includes('450') ||
+      errMsg.includes('451') || errMsg.includes('try again') ||
+      errMsg.includes('temporarily');
+    const isAuthFail = !isRateLimit && (
+      e.code === 'EAUTH' ||
+      errMsg.includes('535') ||
+      errMsg.includes('authentication failed') ||
+      errMsg.includes('invalid credentials') ||
+      errMsg.includes('username and password not accepted'));
 
     if (isAuthFail) {
       try {
