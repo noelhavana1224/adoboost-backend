@@ -771,6 +771,23 @@ const campaignsRouter = express.Router();
 campaignsRouter.use(authMiddleware);
 campaignsRouter.use(effectiveUserMiddleware);
 
+// Convert a naive wall-clock string ("2026-06-15T13:00") interpreted in IANA
+// timezone `tz` into a UTC ISO instant. DST-correct via Intl.
+function zonedWallClockToUtc(localStr, tz) {
+  try {
+    const [datePart, timePart = '00:00'] = String(localStr).replace(' ', 'T').split('T');
+    const [y, mo, d] = datePart.split('-').map(Number);
+    const [h, mi = 0] = timePart.split(':').map(Number);
+    const utcGuess = Date.UTC(y, mo - 1, d, h, mi, 0);
+    const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const p = Object.fromEntries(f.formatToParts(new Date(utcGuess)).filter(x => x.type !== 'literal').map(x => [x.type, parseInt(x.value)]));
+    const asTzWall = Date.UTC(p.year, p.month - 1, p.day, p.hour === 24 ? 0 : p.hour, p.minute, p.second);
+    const offset = asTzWall - utcGuess; // how far ahead tz is of UTC at that instant
+    return new Date(utcGuess - offset).toISOString();
+  } catch { return new Date(localStr).toISOString(); }
+}
+
 campaignsRouter.get('/', async (req, res) => {
   try {
     const campaigns = await dbAll(`SELECT c.*,
@@ -968,11 +985,19 @@ campaignsRouter.post('/:id/launch', async (req, res) => {
     }
     if (!pool.length) { const ea = await dbGet('SELECT * FROM email_accounts WHERE id=?', [c.email_account_id]); if (ea) pool = [ea]; }
     const userRow      = await dbGet('SELECT timezone FROM users WHERE id=?', [req.effectiveUserId]);
-    const userTimezone = userRow?.timezone || 'UTC';
+    // Prefer the campaign's own timezone (what the user picked on the form),
+    // falling back to the user's profile timezone.
+    const userTimezone = c.timezone || userRow?.timezone || 'UTC';
     const now = new Date();
 
-    // Scheduled campaigns fire at the exact requested time; immediate ones start now.
-    const exactStartAt = (c.schedule_type === 'scheduled' && c.scheduled_at) ? c.scheduled_at : null;
+    // Scheduled campaigns fire at the exact requested time. scheduled_at is a
+    // naive wall-clock string in the campaign timezone → convert to a UTC instant.
+    let exactStartAt = null;
+    if (c.schedule_type === 'scheduled' && c.scheduled_at) {
+      exactStartAt = /[zZ]|[+-]\d\d:?\d\d$/.test(c.scheduled_at)
+        ? c.scheduled_at                                   // already has tz/offset
+        : zonedWallClockToUtc(c.scheduled_at, userTimezone); // interpret in campaign tz
+    }
 
     // Email sends — humanized, rotation-aware schedule
     const scheduledSends = emailSeqs.length
