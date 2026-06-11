@@ -119,16 +119,28 @@ async function syncInbox(account) {
                 .filter(e => e !== fromEmail && !e.includes('mailer-daemon') && !e.includes('postmaster') && e !== account.username.toLowerCase());
               let marked = 0;
               for (const rcpt of [...new Set(found)]) {
+                // Mark as 'bounced' ONLY the email(s) that were actually SENT.
+                // A bounce is one delivered email that failed — flagging the
+                // contact's pending follow-ups as bounced too inflated the
+                // bounce rate by the sequence length (e.g. 5×) and was nonsense.
                 const bs = await dbAll(`
-                  SELECT s.id, s.contact_id FROM sends s
+                  SELECT s.id, s.contact_id, s.campaign_id FROM sends s
                   JOIN campaigns c ON s.campaign_id=c.id
                   JOIN contacts ct ON s.contact_id=ct.id
-                  WHERE LOWER(ct.email)=? AND c.user_id=? AND s.status IN ('sent','pending')`,
+                  WHERE LOWER(ct.email)=? AND c.user_id=? AND s.status='sent'`,
                   [rcpt, account.user_id]);
                 for (const b of bs) {
                   await dbRun(`UPDATE sends SET status='bounced', bounced=1, error_message='Bounced (mailer-daemon)' WHERE id=?`, [b.id]);
                   await dbRun(`UPDATE contacts SET bounced=1, is_good=0 WHERE id=?`, [b.contact_id]);
+                  // Suppress the rest of the sequence — a dead mailbox won't
+                  // accept the follow-ups. Cancelled, NOT bounced (no double-count).
+                  await dbRun(`UPDATE sends SET status='cancelled_bounced' WHERE campaign_id=? AND contact_id=? AND status='pending'`, [b.campaign_id, b.contact_id]);
                   marked++;
+                }
+                // Race-safety: if the bounce beat our own 'sent' flip, still
+                // suppress this contact's pending follow-ups in every campaign.
+                if (!bs.length) {
+                  await dbRun(`UPDATE sends SET status='cancelled_bounced' WHERE status='pending' AND contact_id IN (SELECT id FROM contacts WHERE LOWER(email)=? AND user_id=?)`, [rcpt, account.user_id]);
                 }
               }
               if (marked) console.log(`📭 IMAP bounce: marked ${marked} send(s) bounced from a mailer-daemon notice`);
