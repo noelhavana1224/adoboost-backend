@@ -518,7 +518,9 @@ contactsRouter.put('/lists/:id', async (req, res) => {
 
 contactsRouter.delete('/lists/:id', async (req, res) => {
   try {
-    await dbRun('DELETE FROM contacts WHERE list_id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
+    const contactIds = (await dbAll("SELECT id FROM contacts WHERE list_id=? AND user_id=?", [req.params.id, req.effectiveUserId])).map(c => c.id);
+    for (const cid of contactIds) { await dbRun("DELETE FROM sends WHERE contact_id=?", [cid]); }
+    await dbRun("DELETE FROM contacts WHERE list_id=? AND user_id=?", [req.params.id, req.effectiveUserId]);
     const r = await dbRun('DELETE FROM lists WHERE id=? AND user_id=?', [req.params.id, req.effectiveUserId]);
     if (r.changes===0) return res.status(404).json({ error: 'Not found' });
     res.json({ success: true });
